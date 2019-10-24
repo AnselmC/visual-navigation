@@ -45,8 +45,8 @@ template <class T>
 Eigen::Matrix<T, 3, 3> get_skew_symmetric_matrix(
     const Eigen::Matrix<T, 3, 1>& vector) {
   auto result = Eigen::Matrix<T, 3, 3>();
-  result << 0, -vector(2), vector(1), vector(2), 0, -vector(1), -vector(2),
-      vector(1), 0;
+  result << 0, -vector(2), vector(1), vector(2), 0, -vector(0), -vector(1),
+      vector(0), 0;
   return result;
 }
 
@@ -54,22 +54,23 @@ template <class T>
 Eigen::Matrix<T, 3, 1> get_vector_from_skew_symmetric_matrix(
     const Eigen::Matrix<T, 3, 3>& mat) {
   auto result = Eigen::Matrix<T, 3, 1>();
-  result << mat(1, 2), -mat(0, 2), mat(0, 1);
+  result << -mat(1, 2), mat(0, 2), -mat(0, 1);
   return result;
 }
+
 // Implement exp for SO(3)
 template <class T>
 Eigen::Matrix<T, 3, 3> user_implemented_expmap(
     const Eigen::Matrix<T, 3, 1>& phi) {
   // TODO SHEET 1: implement
-  float length = phi.norm();
+  double length = phi.norm();
   auto normalized = phi;
   normalized.normalize();
   auto identity = Eigen::Matrix<T, 3, 3>::Identity();
   Eigen::Matrix<T, 3, 3> result =
       cos(length) * identity +
       (1 - cos(length)) * (normalized * normalized.transpose()) +
-      sin(length) * get_skew_summetric_matrix(a);
+      sin(length) * get_skew_symmetric_matrix(normalized);
   return result;
 }
 
@@ -78,11 +79,16 @@ template <class T>
 Eigen::Matrix<T, 3, 1> user_implemented_logmap(
     const Eigen::Matrix<T, 3, 3>& mat) {
   // TODO SHEET 1: implement
-  float theta = acos(0.5 * mat.trace() - 1);
+  Eigen::Matrix<T, 3, 1> result;
+  double theta = acos(0.5 * (mat.trace() - 1));
+  if (theta == 0.0) {
+    result << 0, 0, 0;
+    return result;
+  }
   Eigen::Matrix<T, 3, 3> log =
       (theta / (2 * sin(theta))) * (mat - mat.transpose());
-  Eigen::Matrix<T, 3, 1> result = get_vector_from_skew_symmetric_matrix(log);
-  return Eigen::Matrix<T, 3, 1>();
+  result = get_vector_from_skew_symmetric_matrix(log);
+  return result;
 }
 
 // Implement exp for SE(3)
@@ -94,19 +100,25 @@ Eigen::Matrix<T, 4, 4> user_implemented_expmap(
   rho << xi(0), xi(1), xi(2);
   phi << xi(3), xi(4), xi(5);
   Eigen::Matrix<T, 3, 3> exp_phi = user_implemented_expmap(phi);
-  float length = xi.norm();
-  auto normalized = xi;
+  double length = phi.norm();
+  auto normalized = phi;
   normalized.normalize();
   auto identity = Eigen::Matrix<T, 3, 3>::Identity();
-  Eigen::Matrix<T, 3, 3> jacobian =
-      (sin(length) / length) * identity +
-      (1 - (sin(length) / length)) * (normalized * normalized.transpose()) +
-      ((1 - cos(length)) / length) * get_skew_symmetric_matrix(normalized);
+  Eigen::Matrix<T, 3, 3> jacobian;
 
-  auto result = Eigen::Matrix<T, 4, 4>();
-  result.block<3, 3>(0, 0) = exp_phi;
-  result.block<3, 3>(0, 3) = jacobian * rho;
-  result.row(3) = Eigen::ArrayXf::Zero(4).transpose();
+  if (length == 0.0) {
+    jacobian << 0, 0, 0, 0, 0, 0, 0, 0, 0;
+  } else {
+    jacobian =
+        (sin(length) / length) * identity +
+        (1 - (sin(length) / length)) * (normalized * normalized.transpose()) +
+        ((1 - cos(length)) / length) * get_skew_symmetric_matrix(normalized);
+  }
+
+  Eigen::Matrix<T, 4, 4> result;
+  result.template block<3, 3>(0, 0) = exp_phi;
+  result.template block<3, 1>(0, 3) = jacobian * rho;
+  result.row(3) = Eigen::Matrix<T, 1, 4>(0, 0, 0, 0);
   result(3, 3) = 1;
   return result;
 }
@@ -118,6 +130,6 @@ Eigen::Matrix<T, 6, 1> user_implemented_logmap(
   // TODO SHEET 1: implement
   UNUSED(mat);
   return Eigen::Matrix<T, 6, 1>();
-}
+  }
 
 }  // namespace visnav
