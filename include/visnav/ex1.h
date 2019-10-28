@@ -62,12 +62,12 @@ Eigen::Matrix<T, 3, 1> get_vector_from_skew_symmetric_matrix(
 template <class T>
 Eigen::Matrix<T, 3, 3> get_jacobian(const Eigen::Matrix<T, 3, 1> phi) {
   double length = phi.norm();
-  auto normalized = phi;
+  auto normalized = phi;  // preserve the original phi for later use
   normalized.normalize();
   auto identity = Eigen::Matrix<T, 3, 3>::Identity();
   Eigen::Matrix<T, 3, 3> jacobian;
 
-  if (length == 0.0) {
+  if (length == 0.0) {  // dividing by zero will result in nans
     jacobian << 0, 0, 0, 0, 0, 0, 0, 0, 0;
   } else {
     jacobian =
@@ -100,7 +100,7 @@ Eigen::Matrix<T, 3, 1> user_implemented_logmap(
     const Eigen::Matrix<T, 3, 3>& mat) {
   Eigen::Matrix<T, 3, 1> result;
   double theta = acos(0.5 * (mat.trace() - 1));
-  if (theta == 0.0) {
+  if (theta == 0.0) {  // dividing by zero will result in nans
     result << 0, 0, 0;
     return result;
   }
@@ -136,13 +136,12 @@ Eigen::Matrix<T, 6, 1> user_implemented_logmap(
   Eigen::Matrix<T, 3, 1> phi = user_implemented_logmap(rotation);
   Eigen::Matrix<T, 3, 3> jacobian = helpers::get_jacobian(phi);
   Eigen::Matrix<T, 3, 1> rho;
-  if (jacobian.isZero()) {
+  if (jacobian.isZero()) {  // can't compute inverse of zero matrix
     rho << 0, 0, 0;
   } else {
     rho = jacobian.inverse() * translation;
   }
   result << rho, phi;
-
   return result;
 }
 
