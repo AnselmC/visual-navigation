@@ -32,6 +32,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
+#include <cassert>
 #include <memory>
 
 #include <Eigen/Dense>
@@ -40,7 +41,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <visnav/common_types.h>
 
 namespace visnav {
+namespace helpers {
+template <typename Scalar>
+Scalar pow(const Scalar& num, int exp) {
+  Scalar result = num;
+  for (int i = 0; i < exp; i++) {
+    result *= num;
+  }
+  return result;
+}
 
+}  // namespace helpers
 template <typename Scalar>
 class AbstractCamera;
 
@@ -85,15 +96,8 @@ class PinholeCamera : public AbstractCamera<Scalar> {
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
-
+    assert(z > 0);
+    res << fx * (x / z) + cx, fy * (y / z) + cy;
     return res;
   }
 
@@ -103,15 +107,16 @@ class PinholeCamera : public AbstractCamera<Scalar> {
     const Scalar& cx = param[2];
     const Scalar& cy = param[3];
 
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
+
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar length = std::sqrt(mx * mx + my * my + 1);
+    res << mx, my, 1;
+    res /= length;
     return res;
   }
 
@@ -169,16 +174,9 @@ class ExtendedUnifiedCamera : public AbstractCamera<Scalar> {
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(alpha);
-    UNUSED(beta);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar d = std::sqrt(beta * (x * x + y * y) + z * z);
+    Scalar denominator = alpha * d + (1 - alpha) * z;
+    res << fx * (x / denominator) + cx, fy * (y / denominator) + cy;
 
     return res;
   }
@@ -191,18 +189,19 @@ class ExtendedUnifiedCamera : public AbstractCamera<Scalar> {
     const Scalar& alpha = param[4];
     const Scalar& beta = param[5];
 
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
+
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(alpha);
-    UNUSED(beta);
-
-    return res;
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar rSquared = mx * mx + my * my;
+    Scalar mz = (1 - beta * alpha * alpha * rSquared) /
+                (alpha * std::sqrt(1 - (2 * alpha - 1) * beta * rSquared) +
+                 (1 - alpha));
+    res << mx, my, mz;
+    return res.normalized();
   }
 
   const VecN& getParam() const { return param; }
@@ -255,16 +254,10 @@ class DoubleSphereCamera : public AbstractCamera<Scalar> {
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(xi);
-    UNUSED(alpha);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar d1 = std::sqrt(x * x + y * y + z * z);
+    Scalar d2 = std::sqrt(x * x + y * y + (xi * d1 + z) * (xi * d1 + z));
+    Scalar denominator = alpha * d2 + (1 - alpha) * (xi * d1 + z);
+    res << fx * x / denominator + cx, fy * y / denominator + cy;
 
     return res;
   }
@@ -277,16 +270,18 @@ class DoubleSphereCamera : public AbstractCamera<Scalar> {
     const Scalar& xi = param[4];
     const Scalar& alpha = param[5];
 
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(xi);
-    UNUSED(alpha);
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar rSquared = mx * mx + my * my;
+    Scalar mz = (1 - alpha * alpha * rSquared) /
+                (alpha * std::sqrt(1 - (2 * alpha - 1) * rSquared) + 1 - alpha);
+    Scalar scalar = (mz * xi + std::sqrt(mz * mz + (1 - xi * xi) * rSquared)) /
+                    (mz * mz + rSquared);
+    res << scalar * mx, scalar * my, scalar * mz - xi;
 
     return res;
   }
@@ -345,18 +340,17 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(k1);
-    UNUSED(k2);
-    UNUSED(k3);
-    UNUSED(k4);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar r = std::sqrt(x * x + y * y);
+    Scalar theta = std::atan2(r, z);
+    Scalar d = theta + k1 * helpers::pow(theta, 3) +
+               k2 * helpers::pow(theta, 5) + k3 * helpers::pow(theta, 7) +
+               k4 * helpers::pow(theta, 9);
+
+    if (r != 0) {
+      res << fx * d * x / r + cx, fy * d * y / r + cy;
+    } else {
+      res << cx, cy;
+    }
 
     return res;
   }
@@ -367,14 +361,39 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
     const Scalar& cx = param[2];
     const Scalar& cy = param[3];
 
+    const Scalar& k1 = param[4];
+    const Scalar& k2 = param[5];
+    const Scalar& k3 = param[6];
+    const Scalar& k4 = param[7];
+
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
+
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar ru = std::sqrt(mx * mx + my * my);
+
+    // Approximation of theta via Newton's method
+    Scalar theta = 3.141592 / 2;  // initial guess
+    Scalar d, dDeriv;
+    for (int i = 0; i < 7; i++) {
+      d = theta + k1 * helpers::pow(theta, 3) + k2 * helpers::pow(theta, 5) +
+          k3 * helpers::pow(theta, 7) + k4 * helpers::pow(theta, 9) - ru;
+      dDeriv = 1 + 3 * k1 * helpers::pow(theta, 2) +
+               5 * k2 * helpers::pow(theta, 4) +
+               7 * k3 * helpers::pow(theta, 6) +
+               9 * k4 * helpers::pow(theta, 8);
+      theta -= (d / dDeriv);
+    }
+
+    if (ru != 0) {
+      res << std::sin(theta) * mx / ru, std::sin(theta) * my / ru,
+          std::cos(theta);
+    } else {
+      res << 0, 0, std::cos(theta);
+    }
 
     return res;
   }
