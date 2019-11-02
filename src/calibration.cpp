@@ -343,8 +343,6 @@ void compute_projections() {
       // 3D coordinates of the aprilgrid corner in the world frame
       Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
 
-      if (cam_id == 0) {  // no transformation
-      }
       Eigen::Vector2d p_2d =
           cam->project(T_i_c.inverse() * T_w_i.inverse() * p_3d);
 
@@ -363,8 +361,7 @@ void optimize() {
   const int DIM_INTR = 8;
   Sophus::test::LocalParameterizationSE3* local_parameterization =
       new Sophus::test::LocalParameterizationSE3;
-  // TODO: use loss function
-  ceres::LossFunction* loss_function = NULL;
+  ceres::LossFunction* loss_function = NULL;  // l2 cost
 
   for (auto& corner_data : calib_corners) {
     TimeCamId time_cam = corner_data.first;
@@ -379,11 +376,14 @@ void optimize() {
       Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
 
       Eigen::Vector2d p_2d = corner_data.second.corners[i];  // ground truth
+
       ReprojectionCostFunctor* costFunctor =
           new ReprojectionCostFunctor(p_2d, p_3d, cam_model);
+
       ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
           ReprojectionCostFunctor, DIM_RESIDUAL, Sophus::SE3d::num_parameters,
           Sophus::SE3d::num_parameters, DIM_INTR>(costFunctor);
+
       problem.AddResidualBlock(costFunction, loss_function, T_w_i->data(),
                                T_i_c->data(), intr->data());
       problem.SetParameterization(T_w_i->data(), local_parameterization);
@@ -396,6 +396,7 @@ void optimize() {
   options.gradient_tolerance = 0.01 * Sophus::Constants<double>::epsilon();
   options.function_tolerance = 0.01 * Sophus::Constants<double>::epsilon();
   options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+  options.minimizer_progress_to_stdout = true;
 
   // Solve
   ceres::Solver::Summary summary;
