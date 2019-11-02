@@ -60,15 +60,25 @@ Eigen::Matrix<T, 3, 1> get_vector_from_skew_symmetric_matrix(
 }
 
 template <class T>
-Eigen::Matrix<T, 3, 3> get_jacobian(const Eigen::Matrix<T, 3, 1> phi) {
+Eigen::Matrix<T, 3, 3> get_jacobian(const Eigen::Matrix<T, 3, 1>& phi) {
   T length = phi.norm();
   auto normalized = phi;  // preserve the original phi for later use
   normalized.normalize();
   auto identity = Eigen::Matrix<T, 3, 3>::Identity();
   Eigen::Matrix<T, 3, 3> jacobian;
 
-  if (length == 0.0) {  // dividing by zero will result in nans
-    jacobian << 0, 0, 0, 0, 0, 0, 0, 0, 0;
+  if (length == 0.0) {  // dividing by zero will result in nans -> use Taylor
+                        // expansion approximations
+    T sin_term =
+        1 - (length * length / 6) *
+                (1 - (length * length / 20) * (1 - (length * length / 42)));
+    T cos_term =
+        (length / 2) *
+        (1 - (length * length / 12) *
+                 (1 - (length * length / 30) * (1 - (length * length / 56))));
+    jacobian << sin_term * identity +
+                    (1 - sin_term) * (normalized * normalized.transpose()) +
+                    cos_term * get_skew_symmetric_matrix(normalized);
   } else {
     jacobian =
         (sin(length) / length) * identity +
@@ -76,6 +86,28 @@ Eigen::Matrix<T, 3, 3> get_jacobian(const Eigen::Matrix<T, 3, 1> phi) {
         ((1 - cos(length)) / length) * get_skew_symmetric_matrix(normalized);
   }
   return jacobian;
+}
+template <class T>
+Eigen::Matrix<T, 3, 3> get_jacobian_inverse(const Eigen::Matrix<T, 3, 1>& phi) {
+  T length = phi.norm();
+  auto normalized = phi;  // preserve the original phi for later use
+  normalized.normalize();
+  auto identity = Eigen::Matrix<T, 3, 3>::Identity();
+  Eigen::Matrix<T, 3, 3> jacobian_inverse;
+  auto skew_symmetric_phi = get_skew_symmetric_matrix(phi);
+  T approximation_term;
+  if (length == 0.0) {  // use taylor expansion
+    std::cout << "using taylor approx" << std::endl;
+    approximation_term = 0;
+  } else {
+    approximation_term = 1 / (length * length) *
+                         (1 - (length * sin(length) / (2 * (1 - cos(length)))));
+  }
+  jacobian_inverse =
+      identity - 0.5 * skew_symmetric_phi +
+      approximation_term * (skew_symmetric_phi * skew_symmetric_phi);
+
+  return jacobian_inverse;
 }
 }  // namespace helpers
 
@@ -116,8 +148,8 @@ Eigen::Matrix<T, 4, 4> user_implemented_expmap(
     const Eigen::Matrix<T, 6, 1>& xi) {
   Eigen::Matrix<T, 3, 1> rho, phi;
   Eigen::Matrix<T, 4, 4> result;
-  rho << xi.head<3>();
-  phi << xi.tail<3>();
+  rho = xi.head(3);
+  phi = xi.tail(3);
   Eigen::Matrix<T, 3, 3> exp_phi = user_implemented_expmap(phi);
   Eigen::Matrix<T, 3, 3> jacobian = helpers::get_jacobian(phi);
   result.template block<3, 3>(0, 0) = exp_phi;
@@ -134,13 +166,8 @@ Eigen::Matrix<T, 6, 1> user_implemented_logmap(
   Eigen::Matrix<T, 3, 3> rotation = mat.template block<3, 3>(0, 0);
   Eigen::Matrix<T, 3, 1> translation = mat.template block<3, 1>(0, 3);
   Eigen::Matrix<T, 3, 1> phi = user_implemented_logmap(rotation);
-  Eigen::Matrix<T, 3, 3> jacobian = helpers::get_jacobian(phi);
-  Eigen::Matrix<T, 3, 1> rho;
-  if (jacobian.isZero()) {  // can't compute inverse of zero matrix
-    rho << 0, 0, 0;
-  } else {
-    rho = jacobian.inverse() * translation;
-  }
+  Eigen::Matrix<T, 3, 3> jacobian_inverse = helpers::get_jacobian_inverse(phi);
+  Eigen::Matrix<T, 3, 1> rho = jacobian_inverse * translation;
   result << rho, phi;
   return result;
 }
