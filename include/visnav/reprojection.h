@@ -63,8 +63,8 @@ struct ReprojectionCostFunctor {
 
     auto projection = cam->project(T_i_c.inverse() * T_w_i.inverse() * p_3d);
 
-    residuals[0] = T(p_2d[0]) - projection[0];
-    residuals[1] = T(p_2d[1]) - projection[1];
+    residuals[0] = projection[0] - T(p_2d[0]);
+    residuals[1] = projection[1] - T(p_2d[1]);
     return true;
   }
 
