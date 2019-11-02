@@ -61,9 +61,6 @@ struct ReprojectionCostFunctor {
     const std::shared_ptr<AbstractCamera<T>> cam =
         AbstractCamera<T>::from_data(cam_model, sIntr);
 
-    // TODO SHEET 2: implement the rest of the functor
-    // compute distances
-    // residual = distance between actual points and projected points
     auto projection = cam->project(T_i_c.inverse() * T_w_i.inverse() * p_3d);
 
     residuals[0] = T(p_2d[0]) - projection[0];
