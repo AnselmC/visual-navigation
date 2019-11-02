@@ -116,8 +116,8 @@ Eigen::Matrix<T, 4, 4> user_implemented_expmap(
     const Eigen::Matrix<T, 6, 1>& xi) {
   Eigen::Matrix<T, 3, 1> rho, phi;
   Eigen::Matrix<T, 4, 4> result;
-  rho << xi(0), xi(1), xi(2);
-  phi << xi(3), xi(4), xi(5);
+  rho << xi.head<3>();
+  phi << xi.tail<3>();
   Eigen::Matrix<T, 3, 3> exp_phi = user_implemented_expmap(phi);
   Eigen::Matrix<T, 3, 3> jacobian = helpers::get_jacobian(phi);
   result.template block<3, 3>(0, 0) = exp_phi;
