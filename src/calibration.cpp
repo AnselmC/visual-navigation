@@ -83,7 +83,7 @@ tbb::concurrent_unordered_map<TimeCamId, CalibInitPoseData> calib_init_poses;
 // loaded images
 tbb::concurrent_unordered_map<TimeCamId, pangolin::TypedImage> calib_images;
 
-// projected 3d corners for every image;
+// projected 2d corners for every image;
 // They are computed in `compute_projections` based on current estimates of
 // camera poses, intrinsics and extrinsics, and are used for visualization.
 tbb::concurrent_unordered_map<TimeCamId, CalibCornerData> opt_corners;
@@ -324,16 +324,20 @@ void load_data(const std::string& dataset_path) {
 void compute_projections() {
   opt_corners.clear();
 
-  std::cout << "Num cameras: " << calib_cam.intrinsics.size() << std::endl;
-  auto cam = calib_cam.intrinsics[0].get();
   for (const auto& kv : calib_corners) {
     CalibCornerData ccd;
 
+    TimeCamId time_cam = kv.first;
+    int frame_id = time_cam.first;
+    int cam_id = time_cam.second;
+
+    auto cam = calib_cam.intrinsics[cam_id].get();
+
     for (size_t i = 0; i < aprilgrid.aprilgrid_corner_pos_3d.size(); i++) {
       // Transformation from body (IMU) frame to world frame
-      Sophus::SE3d T_w_i = vec_T_w_i[kv.first.first];
+      Sophus::SE3d T_w_i = vec_T_w_i[frame_id];
       // Transformation from camera to body (IMU) frame
-      Sophus::SE3d T_i_c = calib_cam.T_i_c[kv.first.second];
+      Sophus::SE3d T_i_c = calib_cam.T_i_c[cam_id];
       // 3D coordinates of the aprilgrid corner in the world frame
       Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
 
@@ -343,7 +347,7 @@ void compute_projections() {
       ccd.corners.push_back(p_2d);
     }
 
-    opt_corners[kv.first] = ccd;
+    opt_corners[time_cam] = ccd;
   }
 }
 
@@ -351,7 +355,58 @@ void optimize() {
   // Build the problem.
   ceres::Problem problem;
 
-  // TODO SHEET 2: setup optimization problem
+  const int dim_residual = 2;  // x and y
+  const int NUM_CAMS = 2;
+  const int dim_intr = 8;
+
+  auto intr_0 = calib_cam.intrinsics[0].get();
+  auto intr_1 = calib_cam.intrinsics[1].get();
+  Sophus::SE3d T_i_c_0 = calib_cam.T_i_c[0];
+  Sophus::SE3d T_i_c_1 = calib_cam.T_i_c[1];
+  problem.AddParameterBlock(T_i_c_0.data(), Sophus::SE3d::num_parameters,
+                            new Sophus::test::LocalParameterizationSE3);
+  problem.AddParameterBlock(T_i_c_1.data(), Sophus::SE3d::num_parameters,
+                            new Sophus::test::LocalParameterizationSE3);
+  problem.AddParameterBlock(intr_0->data(), dim_intr);
+  problem.AddParameterBlock(intr_1->data(), dim_intr);
+  problem.SetParameterBlockConstant(T_i_c_0.data());
+
+  Sophus::SE3d T_i_c;
+  for (auto& corner_data : calib_corners) {
+    TimeCamId time_cam = corner_data.first;
+    int frame_id = time_cam.first;
+    int cam_id = time_cam.second;
+    if (cam_id == 0) {
+      T_i_c = T_i_c_0;
+      auto intr = intr_0;
+    } else {
+      T_i_c = T_i_c_1;
+      auto intr = intr_1;
+    }
+    auto intr = calib_cam.intrinsics[cam_id].get();
+
+    // Transformation from body (IMU) frame to world frame
+    Sophus::SE3d T_w_i = vec_T_w_i[frame_id];
+
+    problem.AddParameterBlock(T_w_i.data(), Sophus::SE3d::num_parameters,
+                              new Sophus::test::LocalParameterizationSE3);
+
+    for (size_t i = 0; i < aprilgrid.aprilgrid_corner_pos_3d.size(); i++) {
+      // 3D coordinates of the aprilgrid corner in the world frame
+      Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
+
+      Eigen::Vector2d p_2d = corner_data.second.corners[i];  // ground truth
+      ReprojectionCostFunctor* costFunctor =
+          new ReprojectionCostFunctor(p_2d, p_3d, cam_model);
+      ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
+          ReprojectionCostFunctor, dim_residual, dim_intr,
+          Sophus::SE3d::num_parameters, Sophus::SE3d::num_parameters>(
+          costFunctor);
+      // TODO add loss function
+      problem.AddResidualBlock(costFunction, NULL, intr->data(), T_i_c.data(),
+                               T_w_i.data());
+    }
+  }
 
   ceres::Solver::Options options;
   options.gradient_tolerance = 0.01 * Sophus::Constants<double>::epsilon();
