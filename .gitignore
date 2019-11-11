@@ -7,3 +7,6 @@ data/V1_01_easy/
 # ignore tex and org files
 *.tex
 *.org
+*~
+*~
+*#
