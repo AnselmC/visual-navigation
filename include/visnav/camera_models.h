@@ -393,7 +393,11 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
     Scalar theta6 = theta2 * theta4;
     Scalar theta8 = theta4 * theta4;
     Scalar d, dDeriv;
-    for (int i = 0; i < 15; i++) {
+    for (int i = 0; i < 3; i++) {
+      theta2 = theta * theta;
+      theta4 = theta2 * theta2;
+      theta6 = theta2 * theta4;
+      theta8 = theta4 * theta4;
       d = theta * (Scalar(1) + k1 * theta2 + k2 * theta4 + k3 * theta6 +
                    k4 * theta8) -
           ru;
