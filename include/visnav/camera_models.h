@@ -332,49 +332,52 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
   std::string name() const { return getName(); }
 
   inline Vec2 project(const Vec3& p) const {
-    const Scalar& fx = Scalar(param[0]);
-    const Scalar& fy = Scalar(param[1]);
-    const Scalar& cx = Scalar(param[2]);
-    const Scalar& cy = Scalar(param[3]);
-    const Scalar& k1 = Scalar(param[4]);
-    const Scalar& k2 = Scalar(param[5]);
-    const Scalar& k3 = Scalar(param[6]);
-    const Scalar& k4 = Scalar(param[7]);
+    const Scalar& fx = param[0];
+    const Scalar& fy = param[1];
+    const Scalar& cx = param[2];
+    const Scalar& cy = param[3];
+    const Scalar& k1 = param[4];
+    const Scalar& k2 = param[5];
+    const Scalar& k3 = param[6];
+    const Scalar& k4 = param[7];
 
-    const Scalar& x = Scalar(p[0]);
-    const Scalar& y = Scalar(p[1]);
-    const Scalar& z = Scalar(p[2]);
+    const Scalar& x = p[0];
+    const Scalar& y = p[1];
+    const Scalar& z = p[2];
 
     Vec2 res;
 
     Scalar r = ceres::sqrt(x * x + y * y);
     Scalar theta = ceres::atan2(r, z);
-    Scalar d = theta + k1 * helpers::pow(theta, 3) +
-               k2 * helpers::pow(theta, 5) + k3 * helpers::pow(theta, 7) +
-               k4 * helpers::pow(theta, 9);
+    Scalar theta2 = theta * theta;
+    Scalar theta4 = theta2 * theta2;
+    Scalar theta6 = theta2 * theta4;
+    Scalar theta8 = theta4 * theta4;
+    Scalar d = theta * (Scalar(1) + k1 * theta2 + k2 * theta4 + k3 * theta6 +
+                        k4 * theta8);
 
-    if (r != Scalar(0)) {
+    if (r > 1e-8) {
       res << fx * d * x / r + cx, fy * d * y / r + cy;
     } else {
-      res << cx, cy;
+      res << fx * x / z + cx, fy * y / z + cy;
     }
 
     return res;
   }
 
   Vec3 unproject(const Vec2& p) const {
-    const Scalar& fx = Scalar(param[0]);
-    const Scalar& fy = Scalar(param[1]);
-    const Scalar& cx = Scalar(param[2]);
-    const Scalar& cy = Scalar(param[3]);
+    const Scalar& fx = param[0];
+    const Scalar& fy = param[1];
+    const Scalar& cx = param[2];
+    const Scalar& cy = param[3];
 
-    const Scalar& k1 = Scalar(param[4]);
-    const Scalar& k2 = Scalar(param[5]);
-    const Scalar& k3 = Scalar(param[6]);
-    const Scalar& k4 = Scalar(param[7]);
+    const Scalar& k1 = param[4];
+    const Scalar& k2 = param[5];
+    const Scalar& k3 = param[6];
+    const Scalar& k4 = param[7];
 
-    const Scalar& u = Scalar(p[0]);
-    const Scalar& v = Scalar(p[1]);
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
 
     Vec3 res;
 
@@ -383,23 +386,27 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
     Scalar ru = ceres::sqrt(mx * mx + my * my);
 
     // Approximation of theta via Newton's method
-    Scalar theta = Scalar(3.141592) / Scalar(2);  // initial guess
+
+    Scalar theta = ru;  // initial guess
+    Scalar theta2 = theta * theta;
+    Scalar theta4 = theta2 * theta2;
+    Scalar theta6 = theta2 * theta4;
+    Scalar theta8 = theta4 * theta4;
     Scalar d, dDeriv;
-    for (int i = 0; i < 7; i++) {
-      d = theta + k1 * helpers::pow(theta, 3) + k2 * helpers::pow(theta, 5) +
-          k3 * helpers::pow(theta, 7) + k4 * helpers::pow(theta, 9) - ru;
-      dDeriv = Scalar(1) + Scalar(3) * k1 * helpers::pow(theta, 2) +
-               Scalar(5) * k2 * helpers::pow(theta, 4) +
-               Scalar(7) * k3 * helpers::pow(theta, 6) +
-               Scalar(9) * k4 * helpers::pow(theta, 8);
+    for (int i = 0; i < 15; i++) {
+      d = theta * (Scalar(1) + k1 * theta2 + k2 * theta4 + k3 * theta6 +
+                   k4 * theta8) -
+          ru;
+      dDeriv = Scalar(1) + Scalar(3) * k1 * theta2 + Scalar(5) * k2 * theta4 +
+               Scalar(7) * k3 * theta6 + Scalar(9) * k4 * theta8;
       theta -= (d / dDeriv);
     }
 
-    if (ru != Scalar(0)) {
+    if (ru > 1e-8) {
       res << ceres::sin(theta) * mx / ru, ceres::sin(theta) * my / ru,
           ceres::cos(theta);
     } else {
-      res << Scalar(0), Scalar(0), ceres::cos(theta);
+      res << mx, my, ceres::cos(theta);
     }
 
     return res;
