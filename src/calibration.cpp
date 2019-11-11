@@ -371,11 +371,11 @@ void optimize() {
     Sophus::SE3d* T_i_c = &calib_cam.T_i_c[cam_id];
     Sophus::SE3d* T_w_i = &vec_T_w_i[frame_id];
 
-    for (size_t i = 0; i < aprilgrid.aprilgrid_corner_pos_3d.size(); i++) {
-      // 3D coordinates of the aprilgrid corner in the world frame
-      Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
-
-      Eigen::Vector2d p_2d = corner_data.second.corners[i];  // ground truth
+    int i = 0;
+    for (Eigen::Vector2d& p_2d : corner_data.second.corners) {
+      size_t index = corner_data.second.corner_ids[i];
+      Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[index];
+      i++;
 
       ReprojectionCostFunctor* costFunctor =
           new ReprojectionCostFunctor(p_2d, p_3d, cam_model);
