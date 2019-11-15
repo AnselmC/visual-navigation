@@ -161,10 +161,20 @@ void computeAngles(const pangolin::ManagedImage<uint8_t>& img_raw,
     double angle = 0;
 
     if (rotate_features) {
-      // TODO SHEET 3: compute angle
-      UNUSED(img_raw);
-      UNUSED(cx);
-      UNUSED(cy);
+      double m01 = 0, m10 = 0;
+      for (int x = -HALF_PATCH_SIZE; x <= HALF_PATCH_SIZE; x++) {
+        for (int y = -HALF_PATCH_SIZE; y <= HALF_PATCH_SIZE; y++) {
+          if (x * x + y * y > HALF_PATCH_SIZE * HALF_PATCH_SIZE or
+              !img_raw.InBounds(cx + x, cy + y)) {
+            continue;
+          }
+
+          m01 += y * img_raw(cx + x, cy + y);
+          m10 += x * img_raw(cx + x, cy + y);
+        }
+      }
+
+      angle = std::atan2(m01, m10);
     }
 
     kd.corner_angles[i] = angle;
