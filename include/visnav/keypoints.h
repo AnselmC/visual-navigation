@@ -163,7 +163,7 @@ void computeAngles(const pangolin::ManagedImage<uint8_t>& img_raw,
     if (rotate_features) {
       double m01 = 0, m10 = 0;
       for (int x = -HALF_PATCH_SIZE; x <= HALF_PATCH_SIZE; x++) {
-        int y_range = (int)std::sqrt(HALF_PATCH_SIZE * HALF_PATCH_SIZE + x * x);
+        int y_range = (int)std::sqrt(HALF_PATCH_SIZE * HALF_PATCH_SIZE - x * x);
         for (int y = -y_range; y <= y_range; y++) {
           if (!img_raw.InBounds(cx + x, cy + y)) {
             continue;
@@ -243,6 +243,8 @@ void matchDescriptors(const std::vector<std::bitset<256>>& corner_descriptors_1,
         secondSmallestDist = smallestDist;
         smallestDist = hammingDist;
         smallestIdx = j;
+      } else if (hammingDist < secondSmallestDist) {
+        secondSmallestDist = hammingDist;
       }
       j++;
     }
@@ -265,6 +267,8 @@ void matchDescriptors(const std::vector<std::bitset<256>>& corner_descriptors_1,
         secondSmallestDist = smallestDist;
         smallestDist = hammingDist;
         smallestIdx = j;
+      } else if (hammingDist < secondSmallestDist) {
+        secondSmallestDist = hammingDist;
       }
       j++;
     }

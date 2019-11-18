@@ -33,6 +33,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #pragma once
 
 #include <bitset>
+#include <memory>
 #include <set>
 
 #include <Eigen/Dense>
@@ -45,18 +46,14 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <visnav/camera_models.h>
 #include <visnav/common_types.h>
+#include <visnav/ex1.h>
 
 namespace visnav {
 
 void computeEssential(const Sophus::SE3d& T_0_1, Eigen::Matrix3d& E) {
   const Eigen::Vector3d t_0_1 = T_0_1.translation();
   const Eigen::Matrix3d R_0_1 = T_0_1.rotationMatrix();
-
-  std::cout << "Rotation:" << std::endl;
-  std::cout << R_0_1 << std::endl;
-  std::cout << t_0_1 << std::endl;
-  std::cout << "Translation:" << std::endl;
-  //  E = R_0_1 * t_0_1.normalized().transpose();
+  E = visnav::helpers::get_skew_symmetric_matrix(t_0_1.normalized()) * R_0_1;
 }
 
 void findInliersEssential(const KeypointsData& kd1, const KeypointsData& kd2,
@@ -72,8 +69,8 @@ void findInliersEssential(const KeypointsData& kd1, const KeypointsData& kd2,
 
     const Eigen::Vector3d x_o_l = cam1->unproject(p0_2d);
     const Eigen::Vector3d x_o_r = cam2->unproject(p1_2d);
-
-    if (x_o_l.transpose() * E * x_o_r < epipolar_error_threshold) {
+    double epipolar_constraint = x_o_l.transpose() * E * x_o_r;
+    if (std::abs(epipolar_constraint) < epipolar_error_threshold) {
       md.inliers.push_back(md.matches[j]);
     }
   }
@@ -86,14 +83,51 @@ void findInliersRansac(const KeypointsData& kd1, const KeypointsData& kd2,
                        MatchData& md) {
   md.inliers.clear();
 
-  // TODO SHEET 3: run RANSAC with using opengv's CentralRelativePose and store
-  // in md.inliers. If the number if inliers is smaller than ransac_min_inliers,
-  // leave md.inliers empty.
-  UNUSED(kd1);
-  UNUSED(kd2);
-  UNUSED(cam1);
-  UNUSED(cam2);
-  UNUSED(ransac_thresh);
-  UNUSED(ransac_min_inliers);
+  opengv::bearingVectors_t bearingVectors0, bearingVectors1;
+  for (size_t i = 0; i < md.matches.size(); i++) {
+    const Eigen::Vector2d p0_2d = kd1.corners[md.matches[i].first];
+    const Eigen::Vector2d p1_2d = kd2.corners[md.matches[i].second];
+    Eigen::Vector3d p0_3d = cam1->unproject(p0_2d);
+    Eigen::Vector3d p1_3d = cam2->unproject(p1_2d);
+    bearingVectors0.push_back(p0_3d);
+    bearingVectors1.push_back(p1_3d);
+  }
+  opengv::relative_pose::CentralRelativeAdapter adapter(bearingVectors0,
+                                                        bearingVectors1);
+  opengv::sac::Ransac<
+      opengv::sac_problems::relative_pose::CentralRelativePoseSacProblem>
+      ransac;
+  std::shared_ptr<
+      opengv::sac_problems::relative_pose::CentralRelativePoseSacProblem>
+      relposeproblem_ptr(
+          new opengv::sac_problems::relative_pose::
+              CentralRelativePoseSacProblem(
+                  adapter, opengv::sac_problems::relative_pose::
+                               CentralRelativePoseSacProblem::NISTER));
+  // run ransac
+  ransac.sac_model_ = relposeproblem_ptr;
+  ransac.threshold_ = ransac_thresh;
+  ransac.computeModel();
+  // get the first result
+  std::vector<int> inliers = ransac.inliers_;
+  opengv::transformation_t transformation = ransac.model_coefficients_;
+
+  adapter.sett12(transformation.col(3));
+  adapter.setR12(transformation.block<3, 3>(0, 0));
+  transformation = opengv::relative_pose::optimize_nonlinear(adapter, inliers);
+
+  ransac.sac_model_->selectWithinDistance(transformation, ransac_thresh,
+                                          inliers);
+  inliers = ransac.inliers_;
+  if ((int)inliers.size() > ransac_min_inliers) {
+    for (auto& inlier : inliers) {
+      md.inliers.push_back(md.matches[inlier]);
+    }
+  }
+  Sophus::SE3d T_i_j(transformation.block<3, 3>(0, 0), transformation.col(3));
+  md.T_i_j = T_i_j;
+  // TODO SHEET 3: run RANSAC with using opengv's CentralRelativePose and
+  // store in md.inliers. If the number if inliers is smaller than
+  // ransac_min_inliers, leave md.inliers empty.
 }
 }  // namespace visnav
