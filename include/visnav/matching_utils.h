@@ -52,10 +52,11 @@ void computeEssential(const Sophus::SE3d& T_0_1, Eigen::Matrix3d& E) {
   const Eigen::Vector3d t_0_1 = T_0_1.translation();
   const Eigen::Matrix3d R_0_1 = T_0_1.rotationMatrix();
 
-  // TODO SHEET 3: compute essential matrix
-  UNUSED(E);
-  UNUSED(t_0_1);
-  UNUSED(R_0_1);
+  std::cout << "Rotation:" << std::endl;
+  std::cout << R_0_1 << std::endl;
+  std::cout << t_0_1 << std::endl;
+  std::cout << "Translation:" << std::endl;
+  //  E = R_0_1 * t_0_1.normalized().transpose();
 }
 
 void findInliersEssential(const KeypointsData& kd1, const KeypointsData& kd2,
@@ -69,13 +70,12 @@ void findInliersEssential(const KeypointsData& kd1, const KeypointsData& kd2,
     const Eigen::Vector2d p0_2d = kd1.corners[md.matches[j].first];
     const Eigen::Vector2d p1_2d = kd2.corners[md.matches[j].second];
 
-    // TODO SHEET 3: determine inliers and store in md.inliers
-    UNUSED(cam1);
-    UNUSED(cam2);
-    UNUSED(E);
-    UNUSED(epipolar_error_threshold);
-    UNUSED(p0_2d);
-    UNUSED(p1_2d);
+    const Eigen::Vector3d x_o_l = cam1->unproject(p0_2d);
+    const Eigen::Vector3d x_o_r = cam2->unproject(p1_2d);
+
+    if (x_o_l.transpose() * E * x_o_r < epipolar_error_threshold) {
+      md.inliers.push_back(md.matches[j]);
+    }
   }
 }
 
