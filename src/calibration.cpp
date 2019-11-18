@@ -64,6 +64,8 @@ void compute_projections();
 void save_calib();
 void optimize();
 
+// T_w_i is transformation from camera 0 to world?
+// calib
 // describes the physical layout of the april grid used
 AprilGrid aprilgrid;
 
@@ -83,7 +85,7 @@ tbb::concurrent_unordered_map<TimeCamId, CalibInitPoseData> calib_init_poses;
 // loaded images
 tbb::concurrent_unordered_map<TimeCamId, pangolin::TypedImage> calib_images;
 
-// projected 3d corners for every image;
+// projected 2d corners for every image;
 // They are computed in `compute_projections` based on current estimates of
 // camera poses, intrinsics and extrinsics, and are used for visualization.
 tbb::concurrent_unordered_map<TimeCamId, CalibCornerData> opt_corners;
@@ -327,24 +329,27 @@ void compute_projections() {
   for (const auto& kv : calib_corners) {
     CalibCornerData ccd;
 
+    TimeCamId time_cam = kv.first;
+    int frame_id = time_cam.first;
+    int cam_id = time_cam.second;
+
+    auto cam = calib_cam.intrinsics[cam_id].get();
+
     for (size_t i = 0; i < aprilgrid.aprilgrid_corner_pos_3d.size(); i++) {
       // Transformation from body (IMU) frame to world frame
-      Sophus::SE3d T_w_i = vec_T_w_i[kv.first.first];
+      Sophus::SE3d T_w_i = vec_T_w_i[frame_id];
       // Transformation from camera to body (IMU) frame
-      Sophus::SE3d T_i_c = calib_cam.T_i_c[kv.first.second];
+      Sophus::SE3d T_i_c = calib_cam.T_i_c[cam_id];
       // 3D coordinates of the aprilgrid corner in the world frame
       Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[i];
 
-      // TODO SHEET 2: project point
-      UNUSED(T_w_i);
-      UNUSED(T_i_c);
-      UNUSED(p_3d);
-      Eigen::Vector2d p_2d;
+      Eigen::Vector2d p_2d =
+          cam->project(T_i_c.inverse() * T_w_i.inverse() * p_3d);
 
       ccd.corners.push_back(p_2d);
     }
 
-    opt_corners[kv.first] = ccd;
+    opt_corners[time_cam] = ccd;
   }
 }
 
@@ -352,12 +357,46 @@ void optimize() {
   // Build the problem.
   ceres::Problem problem;
 
-  // TODO SHEET 2: setup optimization problem
+  const int DIM_RESIDUAL = 2;  // x and y
+  const int DIM_INTR = 8;
+  Sophus::test::LocalParameterizationSE3* local_parameterization =
+      new Sophus::test::LocalParameterizationSE3;
+  ceres::LossFunction* loss_function = NULL;  // l2 cost
+
+  for (auto& corner_data : calib_corners) {
+    TimeCamId time_cam = corner_data.first;
+    int frame_id = time_cam.first;
+    int cam_id = time_cam.second;
+    auto intr = calib_cam.intrinsics[cam_id].get();
+    Sophus::SE3d* T_i_c = &calib_cam.T_i_c[cam_id];
+    Sophus::SE3d* T_w_i = &vec_T_w_i[frame_id];
+
+    int i = 0;
+    for (Eigen::Vector2d& p_2d : corner_data.second.corners) {
+      size_t index = corner_data.second.corner_ids[i];
+      Eigen::Vector3d p_3d = aprilgrid.aprilgrid_corner_pos_3d[index];
+      i++;
+
+      ReprojectionCostFunctor* costFunctor =
+          new ReprojectionCostFunctor(p_2d, p_3d, cam_model);
+
+      ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
+          ReprojectionCostFunctor, DIM_RESIDUAL, Sophus::SE3d::num_parameters,
+          Sophus::SE3d::num_parameters, DIM_INTR>(costFunctor);
+
+      problem.AddResidualBlock(costFunction, loss_function, T_w_i->data(),
+                               T_i_c->data(), intr->data());
+      problem.SetParameterization(T_w_i->data(), local_parameterization);
+      problem.SetParameterization(T_i_c->data(), local_parameterization);
+    }
+    problem.SetParameterBlockConstant(calib_cam.T_i_c[0].data());
+  }
 
   ceres::Solver::Options options;
   options.gradient_tolerance = 0.01 * Sophus::Constants<double>::epsilon();
   options.function_tolerance = 0.01 * Sophus::Constants<double>::epsilon();
   options.linear_solver_type = ceres::SPARSE_NORMAL_CHOLESKY;
+  options.minimizer_progress_to_stdout = true;
 
   // Solve
   ceres::Solver::Summary summary;

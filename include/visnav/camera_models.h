@@ -32,15 +32,27 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
+#include <cassert>
 #include <memory>
 
+#include <ceres/ceres.h>
 #include <Eigen/Dense>
 #include <sophus/se3.hpp>
 
 #include <visnav/common_types.h>
 
 namespace visnav {
+namespace helpers {
+template <typename Scalar>
+Scalar pow(const Scalar& num, int exp) {
+  Scalar result = num;
+  for (int i = 0; i < exp; i++) {
+    result *= num;
+  }
+  return result;
+}
 
+}  // namespace helpers
 template <typename Scalar>
 class AbstractCamera;
 
@@ -74,44 +86,38 @@ class PinholeCamera : public AbstractCamera<Scalar> {
   std::string name() const { return getName(); }
 
   virtual Vec2 project(const Vec3& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
 
-    const Scalar& x = p[0];
-    const Scalar& y = p[1];
-    const Scalar& z = p[2];
+    const Scalar& x = Scalar(p[0]);
+    const Scalar& y = Scalar(p[1]);
+    const Scalar& z = Scalar(p[2]);
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
-
+    assert(z > Scalar(0));
+    res << fx * (x / z) + cx, fy * (y / z) + cy;
     return res;
   }
 
   virtual Vec3 unproject(const Vec2& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
+
+    const Scalar& u = Scalar(p[0]);
+    const Scalar& v = Scalar(p[1]);
 
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar length = ceres::sqrt(mx * mx + my * my + Scalar(1));
+    res << mx, my, Scalar(1);
+    res /= length;
     return res;
   }
 
@@ -156,53 +162,49 @@ class ExtendedUnifiedCamera : public AbstractCamera<Scalar> {
   std::string name() const { return getName(); }
 
   inline Vec2 project(const Vec3& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
-    const Scalar& alpha = param[4];
-    const Scalar& beta = param[5];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
+    const Scalar& alpha = Scalar(param[4]);
+    const Scalar& beta = Scalar(param[5]);
 
-    const Scalar& x = p[0];
-    const Scalar& y = p[1];
-    const Scalar& z = p[2];
+    const Scalar& x = Scalar(p[0]);
+    const Scalar& y = Scalar(p[1]);
+    const Scalar& z = Scalar(p[2]);
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(alpha);
-    UNUSED(beta);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar d = ceres::sqrt(beta * (x * x + y * y) + z * z);
+    Scalar denominator = alpha * d + (Scalar(1) - alpha) * z;
+    res << fx * (x / denominator) + cx, fy * (y / denominator) + cy;
 
     return res;
   }
 
   Vec3 unproject(const Vec2& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
-    const Scalar& alpha = param[4];
-    const Scalar& beta = param[5];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
+    const Scalar& alpha = Scalar(param[4]);
+    const Scalar& beta = Scalar(param[5]);
+
+    const Scalar& u = Scalar(p[0]);
+    const Scalar& v = Scalar(p[1]);
 
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(alpha);
-    UNUSED(beta);
-
-    return res;
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar rSquared = mx * mx + my * my;
+    Scalar mz =
+        (Scalar(1) - beta * alpha * alpha * rSquared) /
+        (alpha * ceres::sqrt(Scalar(1) - (Scalar(2) * alpha - Scalar(1)) *
+                                             beta * rSquared) +
+         (Scalar(1) - alpha));
+    res << mx, my, mz;
+    return res.normalized();
   }
 
   const VecN& getParam() const { return param; }
@@ -242,51 +244,51 @@ class DoubleSphereCamera : public AbstractCamera<Scalar> {
   std::string name() const { return getName(); }
 
   virtual Vec2 project(const Vec3& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
-    const Scalar& xi = param[4];
-    const Scalar& alpha = param[5];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
+    const Scalar& xi = Scalar(param[4]);
+    const Scalar& alpha = Scalar(param[5]);
 
-    const Scalar& x = p[0];
-    const Scalar& y = p[1];
-    const Scalar& z = p[2];
+    const Scalar& x = Scalar(p[0]);
+    const Scalar& y = Scalar(p[1]);
+    const Scalar& z = Scalar(p[2]);
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(xi);
-    UNUSED(alpha);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar d1 = ceres::sqrt(x * x + y * y + z * z);
+    Scalar d2 = ceres::sqrt(x * x + y * y + (xi * d1 + z) * (xi * d1 + z));
+    Scalar denominator = alpha * d2 + (Scalar(1) - alpha) * (xi * d1 + z);
+    res << fx * x / denominator + cx, fy * y / denominator + cy;
 
     return res;
   }
 
   virtual Vec3 unproject(const Vec2& p) const {
-    const Scalar& fx = param[0];
-    const Scalar& fy = param[1];
-    const Scalar& cx = param[2];
-    const Scalar& cy = param[3];
-    const Scalar& xi = param[4];
-    const Scalar& alpha = param[5];
+    const Scalar& fx = Scalar(param[0]);
+    const Scalar& fy = Scalar(param[1]);
+    const Scalar& cx = Scalar(param[2]);
+    const Scalar& cy = Scalar(param[3]);
+    const Scalar& xi = Scalar(param[4]);
+    const Scalar& alpha = Scalar(param[5]);
 
+    const Scalar& u = Scalar(p[0]);
+    const Scalar& v = Scalar(p[1]);
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(xi);
-    UNUSED(alpha);
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar rSquared = mx * mx + my * my;
+    Scalar mz =
+        (Scalar(1) - alpha * alpha * rSquared) /
+        (alpha * ceres::sqrt(Scalar(1) -
+                             (Scalar(2) * alpha - Scalar(1)) * rSquared) +
+         Scalar(1) - alpha);
+    Scalar scalar =
+        (mz * xi + ceres::sqrt(mz * mz + (Scalar(1) - xi * xi) * rSquared)) /
+        (mz * mz + rSquared);
+    res << scalar * mx, scalar * my, scalar * mz - xi;
 
     return res;
   }
@@ -345,18 +347,20 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
 
     Vec2 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
-    UNUSED(k1);
-    UNUSED(k2);
-    UNUSED(k3);
-    UNUSED(k4);
-    UNUSED(x);
-    UNUSED(y);
-    UNUSED(z);
+    Scalar r = ceres::sqrt(x * x + y * y);
+    Scalar theta = ceres::atan2(r, z);
+    Scalar theta2 = theta * theta;
+    Scalar theta4 = theta2 * theta2;
+    Scalar theta6 = theta2 * theta4;
+    Scalar theta8 = theta4 * theta4;
+    Scalar d = theta * (Scalar(1) + k1 * theta2 + k2 * theta4 + k3 * theta6 +
+                        k4 * theta8);
+
+    if (r > 1e-8) {
+      res << fx * d * x / r + cx, fy * d * y / r + cy;
+    } else {
+      res << fx * x / z + cx, fy * y / z + cy;
+    }
 
     return res;
   }
@@ -367,14 +371,47 @@ class KannalaBrandt4Camera : public AbstractCamera<Scalar> {
     const Scalar& cx = param[2];
     const Scalar& cy = param[3];
 
+    const Scalar& k1 = param[4];
+    const Scalar& k2 = param[5];
+    const Scalar& k3 = param[6];
+    const Scalar& k4 = param[7];
+
+    const Scalar& u = p[0];
+    const Scalar& v = p[1];
+
     Vec3 res;
 
-    // TODO SHEET 2: implement camera model
-    UNUSED(p);
-    UNUSED(fx);
-    UNUSED(fy);
-    UNUSED(cx);
-    UNUSED(cy);
+    Scalar mx = (u - cx) / fx;
+    Scalar my = (v - cy) / fy;
+    Scalar ru = ceres::sqrt(mx * mx + my * my);
+
+    // Approximation of theta via Newton's method
+
+    Scalar theta = ru;  // initial guess
+    Scalar theta2 = theta * theta;
+    Scalar theta4 = theta2 * theta2;
+    Scalar theta6 = theta2 * theta4;
+    Scalar theta8 = theta4 * theta4;
+    Scalar d, dDeriv;
+    for (int i = 0; i < 3; i++) {
+      theta2 = theta * theta;
+      theta4 = theta2 * theta2;
+      theta6 = theta2 * theta4;
+      theta8 = theta4 * theta4;
+      d = theta * (Scalar(1) + k1 * theta2 + k2 * theta4 + k3 * theta6 +
+                   k4 * theta8) -
+          ru;
+      dDeriv = Scalar(1) + Scalar(3) * k1 * theta2 + Scalar(5) * k2 * theta4 +
+               Scalar(7) * k3 * theta6 + Scalar(9) * k4 * theta8;
+      theta -= (d / dDeriv);
+    }
+
+    if (ru > 1e-8) {
+      res << ceres::sin(theta) * mx / ru, ceres::sin(theta) * my / ru,
+          ceres::cos(theta);
+    } else {
+      res << mx, my, ceres::cos(theta);
+    }
 
     return res;
   }
