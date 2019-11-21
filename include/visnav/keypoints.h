@@ -161,10 +161,20 @@ void computeAngles(const pangolin::ManagedImage<uint8_t>& img_raw,
     double angle = 0;
 
     if (rotate_features) {
-      // TODO SHEET 3: compute angle
-      UNUSED(img_raw);
-      UNUSED(cx);
-      UNUSED(cy);
+      double m01 = 0, m10 = 0;
+      for (int x = -HALF_PATCH_SIZE; x <= HALF_PATCH_SIZE; x++) {
+        int y_range = (int)std::sqrt(HALF_PATCH_SIZE * HALF_PATCH_SIZE - x * x);
+        for (int y = -y_range; y <= y_range; y++) {
+          if (!img_raw.InBounds(cx + x, cy + y)) {
+            continue;
+          }
+
+          m01 += y * img_raw(cx + x, cy + y);
+          m10 += x * img_raw(cx + x, cy + y);
+        }
+      }
+
+      angle = std::atan2(m01, m10);
     }
 
     kd.corner_angles[i] = angle;
@@ -183,12 +193,24 @@ void computeDescriptors(const pangolin::ManagedImage<uint8_t>& img_raw,
 
     int cx = p[0];
     int cy = p[1];
+    int ua, va, ub, vb, ua_, va_, ub_, vb_;
+    double Ia, Ib;
 
-    // TODO SHEET 3: compute descriptor
-    UNUSED(img_raw);
-    UNUSED(angle);
-    UNUSED(cx);
-    UNUSED(cy);
+    for (int j = 0; j < 256; j++) {
+      ua = pattern_31_x_a[j];
+      va = pattern_31_y_a[j];
+      ub = pattern_31_x_b[j];
+      vb = pattern_31_y_b[j];
+
+      ua_ = std::round(std::cos(angle) * ua - std::sin(angle) * va);
+      va_ = std::round(std::sin(angle) * ua + std::cos(angle) * va);
+      ub_ = std::round(std::cos(angle) * ub - std::sin(angle) * vb);
+      vb_ = std::round(std::sin(angle) * ub + std::cos(angle) * vb);
+
+      Ia = img_raw(cx + ua_, cy + va_);
+      Ib = img_raw(cx + ub_, cy + vb_);
+      descriptor[j] = Ia < Ib ? 1 : 0;
+    }
 
     kd.corner_descriptors[i] = descriptor;
   }
@@ -208,12 +230,59 @@ void matchDescriptors(const std::vector<std::bitset<256>>& corner_descriptors_1,
                       double dist_2_best) {
   matches.clear();
 
-  // TODO SHEET 3: match features
-  UNUSED(corner_descriptors_1);
-  UNUSED(corner_descriptors_2);
-  UNUSED(matches);
-  UNUSED(threshold);
-  UNUSED(dist_2_best);
+  int i = 0, j;
+  // Match 1 to 2
+  std::vector<std::pair<int, int>> first_matches;
+  for (auto& bitset_a : corner_descriptors_1) {
+    j = 0;
+    int smallestDist = 256, secondSmallestDist = 256;
+    int smallestIdx = 1;
+    for (auto& bitset_b : corner_descriptors_2) {
+      int hammingDist = (bitset_a ^ bitset_b).count();
+      if (hammingDist < smallestDist) {
+        secondSmallestDist = smallestDist;
+        smallestDist = hammingDist;
+        smallestIdx = j;
+      } else if (hammingDist < secondSmallestDist) {
+        secondSmallestDist = hammingDist;
+      }
+      j++;
+    }
+    if (smallestDist < threshold and
+        secondSmallestDist >= smallestDist * dist_2_best) {
+      first_matches.push_back(std::make_pair(i, smallestIdx));
+    }
+    i++;
+  }
+  i = 0;
+  // Match 2 to 1
+  std::vector<std::pair<int, int>> second_matches;
+  for (auto& bitset_a : corner_descriptors_2) {
+    j = 0;
+    int smallestDist = 256, secondSmallestDist = 256;
+    int smallestIdx = 1;
+    for (auto& bitset_b : corner_descriptors_1) {
+      int hammingDist = (bitset_a ^ bitset_b).count();
+      if (hammingDist < smallestDist) {
+        secondSmallestDist = smallestDist;
+        smallestDist = hammingDist;
+        smallestIdx = j;
+      } else if (hammingDist < secondSmallestDist) {
+        secondSmallestDist = hammingDist;
+      }
+      j++;
+    }
+    if (smallestDist < threshold and
+        secondSmallestDist >= smallestDist * dist_2_best) {
+      second_matches.push_back(std::make_pair(smallestIdx, i));
+    }
+    i++;
+  }
+  std::sort(first_matches.begin(), first_matches.end());
+  std::sort(second_matches.begin(), second_matches.end());
+  std::set_intersection(first_matches.begin(), first_matches.end(),
+                        second_matches.begin(), second_matches.end(),
+                        std::back_inserter(matches));
 }
 
 }  // namespace visnav
