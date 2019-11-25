@@ -247,15 +247,51 @@ void localize_camera(
     Sophus::SE3d& T_w_c, std::vector<TrackId>& inlier_track_ids) {
   inlier_track_ids.clear();
 
-  // TODO SHEET 4: Localize a new image in a given map
-  UNUSED(tcid);
-  UNUSED(shared_track_ids);
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(feature_tracks);
-  UNUSED(landmarks);
-  UNUSED(T_w_c);
-  UNUSED(reprojection_error_pnp_inlier_threshold_pixel);
+  opengv::points_t points3d;
+  opengv::bearingVectors_t bearingVectors;
+  auto cam = calib_cam.intrinsics.at(tcid.second).get();
+  auto corners = feature_corners.find(tcid)->second.corners;
+  for (const TrackId& track_id : shared_track_ids) {
+    FeatureTrack feature_track = feature_tracks.find(track_id)->second;
+    FeatureId feature_id = feature_track.find(tcid)->second;
+    Eigen::Vector2d p2d = corners.at(feature_id);
+    Eigen::Vector3d p3d = cam->unproject(p2d);
+    bearingVectors.push_back(p3d);
+    Eigen::Vector3d point = landmarks.find(track_id)->second.p;
+    points3d.push_back(point);
+  }
+
+  double ransac_thresh =
+      1.0 -
+      std::cos(std::atan(reprojection_error_pnp_inlier_threshold_pixel / 500.));
+  opengv::absolute_pose::CentralAbsoluteAdapter adapter(bearingVectors,
+                                                        points3d);
+  // create a Ransac object
+  opengv::sac::Ransac<
+      opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem>
+      ransac;
+  // create an AbsolutePoseSacProblem
+  // (algorithm is selectable: KNEIP, GAO, or EPNP)
+  std::shared_ptr<opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem>
+      absposeproblem_ptr(
+          new opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem(
+              adapter, opengv::sac_problems::absolute_pose::
+                           AbsolutePoseSacProblem::KNEIP));
+  // run ransac
+  ransac.sac_model_ = absposeproblem_ptr;
+  ransac.threshold_ = ransac_thresh;
+  ransac.computeModel();
+  // get the result
+  std::vector<int> inliers = ransac.inliers_;
+  opengv::transformation_t transformation = ransac.model_coefficients_;
+  adapter.sett(transformation.col(3));
+  adapter.setR(transformation.block<3, 3>(0, 0));
+  transformation = opengv::absolute_pose::optimize_nonlinear(adapter, inliers);
+  ransac.sac_model_->selectWithinDistance(transformation, ransac_thresh,
+                                          inliers);
+  std::copy(ransac.inliers_.begin(), ransac.inliers_.end(),
+            std::back_inserter(inlier_track_ids));
+  T_w_c = Sophus::SE3d(transformation.block<3, 3>(0, 0), transformation.col(3));
 }
 
 struct BundleAdjustmentOptions {
@@ -273,39 +309,39 @@ struct BundleAdjustmentOptions {
 
   /// maximum number of solver iterations
   int max_num_iterations = 20;
-};
+  };
 
-// Run bundle adjustment to optimize cameras, points, and optionally intrinsics
-void bundle_adjustment(const Corners& feature_corners,
-                       const BundleAdjustmentOptions& options,
-                       const std::set<TimeCamId>& fixed_cameras,
-                       Calibration& calib_cam, Cameras& cameras,
-                       Landmarks& landmarks) {
-  ceres::Problem problem;
+  // Run bundle adjustment to optimize cameras, points, and optionally
+  // intrinsics
+  void bundle_adjustment(
+      const Corners& feature_corners, const BundleAdjustmentOptions& options,
+      const std::set<TimeCamId>& fixed_cameras, Calibration& calib_cam,
+      Cameras& cameras, Landmarks& landmarks) {
+    ceres::Problem problem;
 
-  // TODO SHEET 4: Setup optimization problem
-  UNUSED(feature_corners);
-  UNUSED(options);
-  UNUSED(fixed_cameras);
-  UNUSED(calib_cam);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+    // TODO SHEET 4: Setup optimization problem
+    UNUSED(feature_corners);
+    UNUSED(options);
+    UNUSED(fixed_cameras);
+    UNUSED(calib_cam);
+    UNUSED(cameras);
+    UNUSED(landmarks);
 
-  // Solve
-  ceres::Solver::Options ceres_options;
-  ceres_options.max_num_iterations = options.max_num_iterations;
-  ceres_options.linear_solver_type = ceres::SPARSE_SCHUR;
-  ceres::Solver::Summary summary;
-  Solve(ceres_options, &problem, &summary);
-  switch (options.verbosity_level) {
-    // 0: silent
-    case 1:
-      std::cout << summary.BriefReport() << std::endl;
-      break;
-    case 2:
-      std::cout << summary.FullReport() << std::endl;
-      break;
+    // Solve
+    ceres::Solver::Options ceres_options;
+    ceres_options.max_num_iterations = options.max_num_iterations;
+    ceres_options.linear_solver_type = ceres::SPARSE_SCHUR;
+    ceres::Solver::Summary summary;
+    Solve(ceres_options, &problem, &summary);
+    switch (options.verbosity_level) {
+      // 0: silent
+      case 1:
+        std::cout << summary.BriefReport() << std::endl;
+        break;
+      case 2:
+        std::cout << summary.FullReport() << std::endl;
+        break;
+    }
   }
-}
 
 }  // namespace visnav
