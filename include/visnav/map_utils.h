@@ -135,14 +135,57 @@ int add_new_landmarks_between_cams(const TimeCamId& tcid0,
   }
 
   // at the end of the function this will contain all newly added track ids
+  // only contains trackids for which no landmark previously existed -> how this
+  // would happen idk
   std::vector<TrackId> new_track_ids;
 
   // TODO SHEET 4: Triangulate all new features and add to the map
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+  auto corners_left = feature_corners.find(tcid0)->second.corners;
+  auto corners_right = feature_corners.find(tcid1)->second.corners;
+  int cam_id_left = tcid0.second;
+  int cam_id_right = tcid1.second;
+  auto cam_left = calib_cam.intrinsics.at(cam_id_left).get();
+  auto cam_right = calib_cam.intrinsics.at(cam_id_right).get();
+  Sophus::SE3d T_0_1 = calib_cam.T_i_c.at(cam_id_right);
+  Eigen::Matrix3d rotation = T_0_1.rotationMatrix();
+  Eigen::Vector3d translation = T_0_1.translation();
 
+  opengv::bearingVectors_t bearingVectors0, bearingVectors1;
+  for (TrackId& track_id : shared_track_ids) {
+    bearingVectors0.clear();
+    bearingVectors1.clear();
+    FeatureTrack feature_track = feature_tracks.find(track_id)->second;
+    FeatureId feature_id_left = feature_track.find(tcid0)->second;
+    FeatureId feature_id_right = feature_track.find(tcid1)->second;
+    Eigen::Vector2d p2d_left = corners_left.at(feature_id_left);
+    Eigen::Vector2d p2d_right = corners_right.at(feature_id_right);
+    Eigen::Vector3d p3d_left = cam_left->unproject(p2d_left);
+    Eigen::Vector3d p3d_right = cam_right->unproject(p2d_right);
+    bearingVectors0.push_back(p3d_left);
+    bearingVectors1.push_back(p3d_right);
+    opengv::relative_pose::CentralRelativeAdapter adapter(
+        bearingVectors0, bearingVectors1, translation, rotation);
+
+    Eigen::Vector3d p3d_left_tri =
+        opengv::triangulation::triangulate(adapter, 0);
+    if (p3d_left[2] >= 0) {
+      Eigen::Vector3d p3d_world =
+          cameras.find(tcid0)->second.T_w_c * p3d_left_tri;
+      auto search = landmarks.find(track_id);
+      Landmark landmark;
+      if (search == landmarks.end()) {
+        new_track_ids.push_back(track_id);
+        landmark.p = p3d_world;
+        landmark.obs.insert(std::make_pair(tcid0, feature_id_left));
+        landmark.obs.insert(std::make_pair(tcid1, feature_id_right));
+        landmarks.insert(std::make_pair(track_id, landmark));
+      } else {
+        landmark = search->second;
+        landmark.obs.insert(std::make_pair(tcid0, feature_id_left));
+        landmark.obs.insert(std::make_pair(tcid1, feature_id_right));
+      }
+    }
+  }
   return new_track_ids.size();
 }
 
@@ -160,18 +203,25 @@ bool initialize_scene_from_stereo_pair(const TimeCamId& tcid0,
                                        const FeatureTracks& feature_tracks,
                                        Cameras& cameras, Landmarks& landmarks) {
   // check that the two image ids refer to a stereo pair
-  if (!(tcid0.first == tcid1.first && tcid0.second != tcid1.second)) {
+  int frame_id_left = tcid0.first;
+  int frame_id_right = tcid1.first;
+  int cam_id_left = tcid0.second;
+  int cam_id_right = tcid1.second;
+  if (!(frame_id_left == frame_id_right && cam_id_left != cam_id_right)) {
     std::cerr << "Images " << tcid0 << " and " << tcid1
               << " don't for a stereo pair. Cannot initialize." << std::endl;
     return false;
   }
 
   // TODO SHEET 4: Initialize scene (add initial cameras and landmarks)
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(feature_tracks);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+  Camera cam_left, cam_right;
+  cam_left.T_w_c =
+      Sophus::SE3d(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+  cam_right.T_w_c = calib_cam.T_i_c.at(cam_id_right);
+  cameras.insert(std::make_pair(tcid0, cam_left));
+  cameras.insert(std::make_pair(tcid1, cam_right));
+  add_new_landmarks_between_cams(tcid0, tcid1, calib_cam, feature_corners,
+                                 feature_tracks, cameras, landmarks);
 
   return true;
 }
