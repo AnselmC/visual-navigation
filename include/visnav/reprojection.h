@@ -90,7 +90,8 @@ struct BundleAdjustmentReprojectionCostFunctor {
         AbstractCamera<T>::from_data(cam_model, sIntr);
 
     auto projection = cam->project(T_w_c.inverse() * p_3d_w);
-    residuals = projection - T(p_2d);
+    residuals[0] = projection[0] - T(p_2d[0]);
+    residuals[1] = projection[1] - T(p_2d[1]);
 
     return true;
   }
