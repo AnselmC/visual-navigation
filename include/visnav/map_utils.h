@@ -139,63 +139,50 @@ int add_new_landmarks_between_cams(const TimeCamId& tcid0,
   // would happen idk
   std::vector<TrackId> new_track_ids;
 
-  auto corners0 = feature_corners.find(tcid0)->second.corners;
-  auto corners1 = feature_corners.find(tcid1)->second.corners;
+  auto& corners0 = feature_corners.at(tcid0).corners;
+  auto& corners1 = feature_corners.at(tcid1).corners;
   int cam_id0 = tcid0.second;
   int cam_id1 = tcid1.second;
   auto cam0 = calib_cam.intrinsics.at(cam_id0).get();
   auto cam1 = calib_cam.intrinsics.at(cam_id1).get();
-  // transformations from cameras to world
-  Sophus::SE3d T_w_c0 = cameras.find(tcid0)->second.T_w_c;
-  Sophus::SE3d T_w_c1 = cameras.find(tcid1)->second.T_w_c;
-  // transformations from camera 1 to camera 0
+  Sophus::SE3d T_w_c0 = cameras.at(tcid0).T_w_c;
+  Sophus::SE3d T_w_c1 = cameras.at(tcid1).T_w_c;
   Sophus::SE3d T_0_1 = T_w_c0.inverse() * T_w_c1;
 
   Eigen::Matrix3d rotation = T_0_1.rotationMatrix();
   Eigen::Vector3d translation = T_0_1.translation();
 
-  opengv::bearingVectors_t bearingVectors0, bearingVectors1;
-  // go through all shared tracks
   for (TrackId& track_id : shared_track_ids) {
-    bearingVectors0.clear();
-    bearingVectors1.clear();
-    // get track
     FeatureTrack feature_track = feature_tracks.find(track_id)->second;
-    // get feature ids for cameras
-    FeatureId feature_id0 = feature_track.find(tcid0)->second;
-    FeatureId feature_id1 = feature_track.find(tcid1)->second;
-    // get 2d points corresponding to feature ids
-    Eigen::Vector2d p2d0 = corners0.at(feature_id0);
-    Eigen::Vector2d p2d1 = corners1.at(feature_id1);
-    // unproject to get 3d direction vector
+
+    FeatureId featureid0 = feature_track.find(tcid0)->second;
+    FeatureId featureid1 = feature_track.find(tcid1)->second;
+
+    Eigen::Vector2d p2d0 = corners0.at(featureid0);
+    Eigen::Vector2d p2d1 = corners1.at(featureid1);
+
     Eigen::Vector3d p3d0 = cam0->unproject(p2d0);
     Eigen::Vector3d p3d1 = cam1->unproject(p2d1);
+
+    opengv::bearingVectors_t bearingVectors0, bearingVectors1;
     bearingVectors0.push_back(p3d0);
     bearingVectors1.push_back(p3d1);
     opengv::relative_pose::CentralRelativeAdapter adapter(
         bearingVectors0, bearingVectors1, translation, rotation);
 
-    // triangulate points
     Eigen::Vector3d p3d0_tri = opengv::triangulation::triangulate(adapter, 0);
-    // if z-value is negative, point is behind camera 0 -> invalid
-    if (p3d0_tri[2] >= 0) {
-      Eigen::Vector3d p3d_world = T_w_c0 * p3d0_tri;
-      // check if track is already a landmark
-      auto search = landmarks.find(track_id);
-      if (search == landmarks.end()) {
-        // if landmark doesn't yet exist, create a new landmark with 3d point,
-        // add observations and insert it
-        new_track_ids.push_back(track_id);
-        Landmark new_landmark;
-        new_landmark.p = p3d_world;
-        new_landmark.obs.insert(std::make_pair(tcid0, feature_id0));
-        new_landmark.obs.insert(std::make_pair(tcid1, feature_id1));
-        landmarks.insert(std::make_pair(track_id, new_landmark));
-      } else {  // landmark exists already
-        // insert new observation(s)
-        search->second.obs.insert(std::make_pair(tcid0, feature_id0));
-        search->second.obs.insert(std::make_pair(tcid1, feature_id1));
+    Eigen::Vector3d p3d_world = T_w_c0 * p3d0_tri;
+
+    if (landmarks.find(track_id) == landmarks.end()) {
+      Landmark new_landmark;
+      new_landmark.p = p3d_world;
+      for (auto& elem : feature_track) {
+        if (cameras.find(elem.first) != cameras.end()) {
+          new_landmark.obs.insert(std::make_pair(elem.first, elem.second));
+        }
       }
+      landmarks.insert(std::make_pair(track_id, new_landmark));
+      new_track_ids.push_back(track_id);
     }
   }
   return new_track_ids.size();
@@ -337,7 +324,7 @@ struct BundleAdjustmentOptions {
     const int DIM_VECTOR = 3;
     Sophus::test::LocalParameterizationSE3* local_parameterization =
         new Sophus::test::LocalParameterizationSE3;
-    ceres::LossFunction* loss_function;
+    ceres::LossFunction* loss_function = nullptr;
     if (options.use_huber) {
       loss_function = new ceres::HuberLoss(options.huber_parameter);
     }
@@ -368,7 +355,7 @@ struct BundleAdjustmentOptions {
         // create cost function
         ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
             BundleAdjustmentReprojectionCostFunctor, DIM_RESIDUAL,
-            Sophus::SE3d::num_parameters, DIM_INTR, DIM_VECTOR>(costFunctor);
+            Sophus::SE3d::num_parameters, DIM_VECTOR, DIM_INTR>(costFunctor);
 
         // add residual block
         problem.AddResidualBlock(costFunction, loss_function, T_w_c->data(),
