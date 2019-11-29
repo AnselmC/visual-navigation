@@ -10,3 +10,8 @@ data/V1_01_easy/
 *~
 *~
 *#
+*.aux
+*.bbl
+*.blg
+*.out
+*.log
