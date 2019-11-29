@@ -57,14 +57,16 @@ void project_landmarks(
   projected_points.clear();
   projected_track_ids.clear();
 
-  // TODO SHEET 5: project landmarks to the image plane using the current
-  // locations of the cameras. Put 2d coordinates of the projected points into
-  // projected_points and the corresponding id of the landmark into
-  // projected_track_ids.
-  UNUSED(current_pose);
-  UNUSED(cam);
-  UNUSED(landmarks);
-  UNUSED(cam_z_threshold);
+  for (auto& landmark : landmarks) {
+    TrackId trackid = landmark.first;
+    Eigen::Vector3d p3d = landmark.second.p;
+    Eigen::Vector3d p3d_c = current_pose.inverse() * p3d;
+    if (p3d_c[2] > cam_z_threshold) {
+      Eigen::Vector2d p2d_c = cam->project(p3d_c);
+      projected_points.push_back(p2d_c);
+      projected_track_ids.push_back(trackid);
+    }
+  }
 }
 
 void find_matches_landmarks(
@@ -82,34 +84,70 @@ void find_matches_landmarks(
   // keypoints in the current frame. For every detected keypoint search for
   // matches inside a circle with radius match_max_dist_2d around the point
   // location. For every landmark the distance is the minimal distance between
-  // the descriptor of the current point and descriptors of all observations of
-  // the landmarks. The feature_match_max_dist and feature_match_test_next_best
-  // should be used to filter outliers the same way as in exercise 3.
-  UNUSED(kdl);
-  UNUSED(landmarks);
-  UNUSED(feature_corners);
-  UNUSED(projected_points);
-  UNUSED(projected_track_ids);
-  UNUSED(match_max_dist_2d);
-  UNUSED(feature_match_max_dist);
-  UNUSED(feature_match_test_next_best);
-}
+  // the descriptor of the current point and descriptors of all observations
+  // of the landmarks. The feature_match_max_dist and
+  // feature_match_test_next_best should be used to filter outliers the same
+  // way as in exercise 3.
 
-void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
-                     const KeypointsData& kdl, const Landmarks& landmarks,
-                     const double reprojection_error_pnp_inlier_threshold_pixel,
-                     const MatchData& md, Sophus::SE3d& T_w_c,
-                     std::vector<int>& inliers) {
-  inliers.clear();
+  // go through every feature
+  for (size_t featureid0 = 0; featureid0 < kdl.corners.size(); featureid0++) {
+    Eigen::Vector2d corner = kdl.corners.at(featureid0);
+    std::bitset<256> descriptor = kdl.corner_descriptors.at(featureid0);
+    std::vector<std::pair<Eigen::Vector2d, TrackId>> candidate_points;
+    // select landmark candidates based on 2d distance
+    for (size_t j = 0; j < projected_points.size(); j++) {
+      Eigen::Vector2d point = projected_points.at(j);
+      double distance = std::sqrt(std::pow(point[0] - corner[0], 2) +
+                                  std::pow(point[1] - corner[1], 2));
+      if (distance <= max_match_dist_2d) {
+        candidate_points.push_back(
+            std::make_pair(point, projected_track_ids.at(j)));
+      }
+    }
 
-  if (md.matches.size() == 0) {
-    T_w_c = Sophus::SE3d();
+    // go through candidate matches to find smallest distance
+    std::vector<int> distances;
+    for (auto& candidate : candidate_points) {
+      TrackId trackid = candidate.second;
+      Landmark landmark = landmarks.at(trackid);
+      FeatureTrack obs = landmark.obs;
+
+      int min_dist = 256;
+      for (auto& ob : obs) {
+        TimeCamId tcid = obs.first;
+        FeatureId featureid = obs.second;
+        std::bitset<256> ob_descriptor =
+            feature_corners.at(tcid).corner_descriptors.at(featureid);
+        int hamming_dist = (descriptor ^ ob_descriptor).count();
+        if (hamming_dist < min_dist) {
+          min_dist = hamming_dist;
+        }
+      }
+      distances.push_back(min_dist);
+    }
+    // get best match from distances
+    // distance needs to be smaller than feature_match_max_dist and at least
+    // feature_match_test_next_best bigger than second smallest distance
+    int smallest_dist, second_smallest_dist;
+    smallest_dist = std::min_element(distances.begin(), distances.end());
+    int min_idx = distances.get_index(smallest_dist);
+    std::sort(distances.begin(), distances.end());
+    second_smallest_dist = distances.at(1);
+    if (smallest_dist <= feature_match_max_dist and
+        smallest_dist * feature_match_test_next_best <= second_smallest_dist) {
+      // valid match
+      // TODO: what is featureid1? Doesn't make sense to me..
+      // would only make sense to save track id
+      TrackID match = candidate_points.at(min_idx).second;
+      md.matches.push_back(std::make_pair<featureid0, trackid>);
+    }
+
     return;
   }
 
   // TODO SHEET 5: Find the pose (T_w_c) and the inliers using the landmark to
-  // keypoints matches and PnP. This should be similar to the localize_camera in
-  // exercise 4 but in this execise we don't explicitelly have tracks.
+  // keypoints matches and PnP. This should be similar to the localize_camera
+  // in exercise 4 but in this execise we don't explicitelly have tracks.
   UNUSED(cam);
   UNUSED(kdl);
   UNUSED(landmarks);
@@ -131,11 +169,11 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   // matches for the left camera (camera 0). The inliers vector contains all
   // inliers in md that were used to compute the pose T_w_c0. For all inliers
   // add the observations to the existing landmarks (if the left point is in
-  // md_stereo.inliers then add both observations). For all stereo observations
-  // that were not added to the existing landmarks triangulate and add new
-  // landmarks. Here next_landmark_id is a running index of the landmarks, so
-  // after adding a new landmark you should always increase next_landmark_id
-  // by 1.
+  // md_stereo.inliers then add both observations). For all stereo
+  // observations that were not added to the existing landmarks triangulate
+  // and add new landmarks. Here next_landmark_id is a running index of the
+  // landmarks, so after adding a new landmark you should always increase
+  // next_landmark_id by 1.
   UNUSED(tcidl);
   UNUSED(tcidr);
   UNUSED(kdl);
@@ -149,22 +187,23 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   UNUSED(next_landmark_id);
   UNUSED(t_0_1);
   UNUSED(R_0_1);
-}
+  }
 
-void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
-                          Cameras& cameras, Landmarks& landmarks,
-                          Landmarks& old_landmarks,
-                          std::set<FrameId>& kf_frames) {
-  kf_frames.emplace(tcidl.first);
+  void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
+                            Cameras& cameras, Landmarks& landmarks,
+                            Landmarks& old_landmarks,
+                            std::set<FrameId>& kf_frames) {
+    kf_frames.emplace(tcidl.first);
 
-  // TODO SHEET 5: Remove old cameras and observations if the number of keyframe
-  // pairs (left and right image is a pair) is larger than max_num_kfs. The ids
-  // of all the keyframes that are currently in the optimization should be
-  // stored in kf_frames. Removed keyframes should be removed from cameras and
-  // landmarks with no left observations should be moved to old_landmarks.
-  UNUSED(max_num_kfs);
-  UNUSED(cameras);
-  UNUSED(landmarks);
-  UNUSED(old_landmarks);
-}
+    // TODO SHEET 5: Remove old cameras and observations if the number of
+    // keyframe pairs (left and right image is a pair) is larger than
+    // max_num_kfs. The ids of all the keyframes that are currently in the
+    // optimization should be stored in kf_frames. Removed keyframes should be
+    // removed from cameras and landmarks with no left observations should be
+    // moved to old_landmarks.
+    UNUSED(max_num_kfs);
+    UNUSED(cameras);
+    UNUSED(landmarks);
+    UNUSED(old_landmarks);
+  }
 }  // namespace visnav
