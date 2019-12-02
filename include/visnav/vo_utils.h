@@ -62,10 +62,13 @@ void project_landmarks(
     TrackId trackid = landmark.first;
     Eigen::Vector3d p3d = landmark.second.p;
     Eigen::Vector3d p3d_c = current_pose.inverse() * p3d;
-    if (p3d_c[2] > cam_z_threshold) {
+    if (p3d_c[2] >= cam_z_threshold) {
       Eigen::Vector2d p2d_c = cam->project(p3d_c);
-      projected_points.push_back(p2d_c);
-      projected_track_ids.push_back(trackid);
+      if (p2d_c[0] >= 0 and p2d_c[0] <= 752 and p2d_c[1] >= 0 and
+          p2d_c[1] <= 480) {
+        projected_points.push_back(p2d_c);
+        projected_track_ids.push_back(trackid);
+      }
     }
   }
 }
