@@ -135,14 +135,56 @@ int add_new_landmarks_between_cams(const TimeCamId& tcid0,
   }
 
   // at the end of the function this will contain all newly added track ids
+  // only contains trackids for which no landmark previously existed -> how this
+  // would happen idk
   std::vector<TrackId> new_track_ids;
 
-  // TODO SHEET 4: Triangulate all new features and add to the map
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+  auto& corners0 = feature_corners.at(tcid0).corners;
+  auto& corners1 = feature_corners.at(tcid1).corners;
+  int cam_id0 = tcid0.second;
+  int cam_id1 = tcid1.second;
+  auto cam0 = calib_cam.intrinsics.at(cam_id0).get();
+  auto cam1 = calib_cam.intrinsics.at(cam_id1).get();
+  Sophus::SE3d T_w_c0 = cameras.at(tcid0).T_w_c;
+  Sophus::SE3d T_w_c1 = cameras.at(tcid1).T_w_c;
+  Sophus::SE3d T_0_1 = T_w_c0.inverse() * T_w_c1;
 
+  Eigen::Matrix3d rotation = T_0_1.rotationMatrix();
+  Eigen::Vector3d translation = T_0_1.translation();
+
+  for (TrackId& track_id : shared_track_ids) {
+    FeatureTrack feature_track = feature_tracks.find(track_id)->second;
+
+    FeatureId featureid0 = feature_track.find(tcid0)->second;
+    FeatureId featureid1 = feature_track.find(tcid1)->second;
+
+    Eigen::Vector2d p2d0 = corners0.at(featureid0);
+    Eigen::Vector2d p2d1 = corners1.at(featureid1);
+
+    Eigen::Vector3d p3d0 = cam0->unproject(p2d0);
+    Eigen::Vector3d p3d1 = cam1->unproject(p2d1);
+
+    opengv::bearingVectors_t bearingVectors0, bearingVectors1;
+    bearingVectors0.push_back(p3d0);
+    bearingVectors1.push_back(p3d1);
+    opengv::relative_pose::CentralRelativeAdapter adapter(
+        bearingVectors0, bearingVectors1, translation, rotation);
+
+    Eigen::Vector3d p3d0_tri = opengv::triangulation::triangulate(adapter, 0);
+    Eigen::Vector3d p3d_world = T_w_c0 * p3d0_tri;
+
+    if (landmarks.find(track_id) == landmarks.end()) {
+      Landmark new_landmark;
+      new_landmark.p = p3d_world;
+      for (auto& elem : feature_track) {
+        if (cameras.find(elem.first) != cameras.end()) {
+          new_landmark.obs.insert(std::make_pair(elem.first, elem.second));
+        }
+      }
+      landmarks.insert(std::make_pair(track_id, new_landmark));
+      new_track_ids.push_back(track_id);
+    }
+  }
   return new_track_ids.size();
 }
 
@@ -160,18 +202,25 @@ bool initialize_scene_from_stereo_pair(const TimeCamId& tcid0,
                                        const FeatureTracks& feature_tracks,
                                        Cameras& cameras, Landmarks& landmarks) {
   // check that the two image ids refer to a stereo pair
-  if (!(tcid0.first == tcid1.first && tcid0.second != tcid1.second)) {
+  int frame_id0 = tcid0.first;
+  int frame_id1 = tcid1.first;
+  int cam_id0 = tcid0.second;
+  int cam_id1 = tcid1.second;
+  if (!(frame_id0 == frame_id1 && cam_id0 != cam_id1)) {
     std::cerr << "Images " << tcid0 << " and " << tcid1
               << " don't for a stereo pair. Cannot initialize." << std::endl;
     return false;
   }
 
   // TODO SHEET 4: Initialize scene (add initial cameras and landmarks)
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(feature_tracks);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+  Camera cam0, cam1;
+  cam0.T_w_c =
+      Sophus::SE3d(Eigen::Matrix3d::Identity(), Eigen::Vector3d::Zero());
+  cam1.T_w_c = calib_cam.T_i_c.at(cam_id1);
+  cameras.insert(std::make_pair(tcid0, cam0));
+  cameras.insert(std::make_pair(tcid1, cam1));
+  add_new_landmarks_between_cams(tcid0, tcid1, calib_cam, feature_corners,
+                                 feature_tracks, cameras, landmarks);
 
   return true;
 }
@@ -197,15 +246,51 @@ void localize_camera(
     Sophus::SE3d& T_w_c, std::vector<TrackId>& inlier_track_ids) {
   inlier_track_ids.clear();
 
-  // TODO SHEET 4: Localize a new image in a given map
-  UNUSED(tcid);
-  UNUSED(shared_track_ids);
-  UNUSED(calib_cam);
-  UNUSED(feature_corners);
-  UNUSED(feature_tracks);
-  UNUSED(landmarks);
-  UNUSED(T_w_c);
-  UNUSED(reprojection_error_pnp_inlier_threshold_pixel);
+  opengv::points_t points3d;
+  opengv::bearingVectors_t bearingVectors;
+  auto cam = calib_cam.intrinsics.at(tcid.second).get();
+  auto corners = feature_corners.find(tcid)->second.corners;
+  for (const TrackId& track_id : shared_track_ids) {
+    FeatureTrack feature_track = feature_tracks.find(track_id)->second;
+    FeatureId feature_id = feature_track.find(tcid)->second;
+    Eigen::Vector2d p2d = corners.at(feature_id);
+    Eigen::Vector3d p3d = cam->unproject(p2d);
+    bearingVectors.push_back(p3d);
+    Eigen::Vector3d point = landmarks.find(track_id)->second.p;
+    points3d.push_back(point);
+  }
+
+  double ransac_thresh =
+      1.0 -
+      std::cos(std::atan(reprojection_error_pnp_inlier_threshold_pixel / 500.));
+  opengv::absolute_pose::CentralAbsoluteAdapter adapter(bearingVectors,
+                                                        points3d);
+  // create a Ransac object
+  opengv::sac::Ransac<
+      opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem>
+      ransac;
+  // create an AbsolutePoseSacProblem
+  // (algorithm is selectable: KNEIP, GAO, or EPNP)
+  std::shared_ptr<opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem>
+      absposeproblem_ptr(
+          new opengv::sac_problems::absolute_pose::AbsolutePoseSacProblem(
+              adapter, opengv::sac_problems::absolute_pose::
+                           AbsolutePoseSacProblem::KNEIP));
+  // run ransac
+  ransac.sac_model_ = absposeproblem_ptr;
+  ransac.threshold_ = ransac_thresh;
+  ransac.computeModel();
+  // get the result
+  std::vector<int> inliers = ransac.inliers_;
+  opengv::transformation_t transformation = ransac.model_coefficients_;
+  adapter.sett(transformation.col(3));
+  adapter.setR(transformation.block<3, 3>(0, 0));
+  transformation = opengv::absolute_pose::optimize_nonlinear(adapter, inliers);
+  ransac.sac_model_->selectWithinDistance(transformation, ransac_thresh,
+                                          inliers);
+  std::copy(ransac.inliers_.begin(), ransac.inliers_.end(),
+            std::back_inserter(inlier_track_ids));
+  T_w_c = Sophus::SE3d(transformation.block<3, 3>(0, 0), transformation.col(3));
 }
 
 struct BundleAdjustmentOptions {
@@ -225,7 +310,8 @@ struct BundleAdjustmentOptions {
   int max_num_iterations = 20;
 };
 
-// Run bundle adjustment to optimize cameras, points, and optionally intrinsics
+// Run bundle adjustment to optimize cameras, points, and optionally
+// intrinsics
 void bundle_adjustment(const Corners& feature_corners,
                        const BundleAdjustmentOptions& options,
                        const std::set<TimeCamId>& fixed_cameras,
@@ -233,14 +319,60 @@ void bundle_adjustment(const Corners& feature_corners,
                        Landmarks& landmarks) {
   ceres::Problem problem;
 
-  // TODO SHEET 4: Setup optimization problem
-  UNUSED(feature_corners);
-  UNUSED(options);
-  UNUSED(fixed_cameras);
-  UNUSED(calib_cam);
-  UNUSED(cameras);
-  UNUSED(landmarks);
+  const int DIM_RESIDUAL = 2;
+  const int DIM_INTR = 8;
+  const int DIM_VECTOR = 3;
+  Sophus::test::LocalParameterizationSE3* local_parameterization =
+      new Sophus::test::LocalParameterizationSE3;
+  ceres::LossFunction* loss_function = nullptr;
+  if (options.use_huber) {
+    loss_function = new ceres::HuberLoss(options.huber_parameter);
+  }
+  // Optimize over all landmarks
+  for (auto& landmark : landmarks) {
+    // get 3d world point
+    Eigen::Vector3d* p3d = &landmark.second.p;
+    // Optimize over all positions
+    for (auto& obs : landmark.second.obs) {
+      TimeCamId tcid = obs.first;
+      CamId cam_id = tcid.second;
+      // get camera to world transformation
+      Sophus::SE3d* T_w_c = &cameras.find(tcid)->second.T_w_c;
+      FeatureId feature_id = obs.second;
+      // get camera intrinsics
+      auto intr = calib_cam.intrinsics.at(cam_id).get();
+      // get camera name: why do we even need this? Aren't the intrinsics
+      // already an impl of a specific camera?
+      std::string cam_model = intr->name();
+      // get corresponding 2d point from camera
+      Eigen::Vector2d p_2d =
+          feature_corners.find(tcid)->second.corners[feature_id];
 
+      // create cost functor from cam_model and 2d point
+      BundleAdjustmentReprojectionCostFunctor* costFunctor =
+          new BundleAdjustmentReprojectionCostFunctor(p_2d, cam_model);
+
+      // create cost function
+      ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
+          BundleAdjustmentReprojectionCostFunctor, DIM_RESIDUAL,
+          Sophus::SE3d::num_parameters, DIM_VECTOR, DIM_INTR>(costFunctor);
+
+      // add residual block
+      problem.AddResidualBlock(costFunction, loss_function, T_w_c->data(),
+                               p3d->data(), intr->data());
+      // set parameterization of T_w_c
+      problem.SetParameterization(T_w_c->data(), local_parameterization);
+
+      // set intrinsics constant
+      if (!options.optimize_intrinsics) {
+        problem.SetParameterBlockConstant(intr->data());
+      }
+      // fix certain cameras
+      if (fixed_cameras.find(tcid) != fixed_cameras.end()) {
+        problem.SetParameterBlockConstant(T_w_c->data());
+      }
+    }
+  }
   // Solve
   ceres::Solver::Options ceres_options;
   ceres_options.max_num_iterations = options.max_num_iterations;
