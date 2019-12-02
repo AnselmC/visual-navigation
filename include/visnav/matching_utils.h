@@ -116,22 +116,14 @@ void findInliersRansac(const KeypointsData& kd1, const KeypointsData& kd2,
   adapter.setR12(transformation.block<3, 3>(0, 0));
   transformation = opengv::relative_pose::optimize_nonlinear(adapter, inliers);
 
-  ransac.sac_model_->selectWithinDistance(transformation, ransac_thresh,
-                                          inliers);
-  inliers = ransac.inliers_;
-  if ((int)inliers.size() > ransac_min_inliers) {
+  ran.sac_model_->selectWithinDistance(transformation, ransac_thresh, inliers);
+
+  if ((int)inliers.size() >= ransac_min_inliers) {
     for (auto& inlier : inliers) {
       md.inliers.push_back(md.matches[inlier]);
     }
   }
   Sophus::SE3d T_i_j(transformation.block<3, 3>(0, 0), transformation.col(3));
   md.T_i_j = T_i_j;
-  // TODO SHEET 3: Run RANSAC with using opengv's CentralRelativePose and store
-  // the final inlier indices in md.inliers and the final relative pose in
-  // md.T_i_j (normalize translation). If the number of inliers is smaller than
-  // ransac_min_inliers, leave md.inliers empty. Note that if the initial RANSAC
-  // was successful, you should do non-linear refinement of the model parameters
-  // using all inliers, and then re-estimate the inlier set with the refined
-  // model parameters.
 }
 }  // namespace visnav
