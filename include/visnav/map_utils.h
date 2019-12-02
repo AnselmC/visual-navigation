@@ -308,86 +308,86 @@ struct BundleAdjustmentOptions {
 
   /// maximum number of solver iterations
   int max_num_iterations = 20;
-  };
+};
 
-  // Run bundle adjustment to optimize cameras, points, and optionally
-  // intrinsics
-  void bundle_adjustment(const Corners& feature_corners,
-                         const BundleAdjustmentOptions& options,
-                         const std::set<TimeCamId>& fixed_cameras,
-                         Calibration& calib_cam, Cameras& cameras,
-                         Landmarks& landmarks) {
-    ceres::Problem problem;
+// Run bundle adjustment to optimize cameras, points, and optionally
+// intrinsics
+void bundle_adjustment(const Corners& feature_corners,
+                       const BundleAdjustmentOptions& options,
+                       const std::set<TimeCamId>& fixed_cameras,
+                       Calibration& calib_cam, Cameras& cameras,
+                       Landmarks& landmarks) {
+  ceres::Problem problem;
 
-    const int DIM_RESIDUAL = 2;
-    const int DIM_INTR = 8;
-    const int DIM_VECTOR = 3;
-    Sophus::test::LocalParameterizationSE3* local_parameterization =
-        new Sophus::test::LocalParameterizationSE3;
-    ceres::LossFunction* loss_function = nullptr;
-    if (options.use_huber) {
-      loss_function = new ceres::HuberLoss(options.huber_parameter);
-    }
-    // Optimize over all landmarks
-    for (auto& landmark : landmarks) {
-      // get 3d world point
-      Eigen::Vector3d* p3d = &landmark.second.p;
-      // Optimize over all positions
-      for (auto& obs : landmark.second.obs) {
-        TimeCamId tcid = obs.first;
-        CamId cam_id = tcid.second;
-        // get camera to world transformation
-        Sophus::SE3d* T_w_c = &cameras.find(tcid)->second.T_w_c;
-        FeatureId feature_id = obs.second;
-        // get camera intrinsics
-        auto intr = calib_cam.intrinsics.at(cam_id).get();
-        // get camera name: why do we even need this? Aren't the intrinsics
-        // already an impl of a specific camera?
-        std::string cam_model = intr->name();
-        // get corresponding 2d point from camera
-        Eigen::Vector2d p_2d =
-            feature_corners.find(tcid)->second.corners[feature_id];
+  const int DIM_RESIDUAL = 2;
+  const int DIM_INTR = 8;
+  const int DIM_VECTOR = 3;
+  Sophus::test::LocalParameterizationSE3* local_parameterization =
+      new Sophus::test::LocalParameterizationSE3;
+  ceres::LossFunction* loss_function = nullptr;
+  if (options.use_huber) {
+    loss_function = new ceres::HuberLoss(options.huber_parameter);
+  }
+  // Optimize over all landmarks
+  for (auto& landmark : landmarks) {
+    // get 3d world point
+    Eigen::Vector3d* p3d = &landmark.second.p;
+    // Optimize over all positions
+    for (auto& obs : landmark.second.obs) {
+      TimeCamId tcid = obs.first;
+      CamId cam_id = tcid.second;
+      // get camera to world transformation
+      Sophus::SE3d* T_w_c = &cameras.find(tcid)->second.T_w_c;
+      FeatureId feature_id = obs.second;
+      // get camera intrinsics
+      auto intr = calib_cam.intrinsics.at(cam_id).get();
+      // get camera name: why do we even need this? Aren't the intrinsics
+      // already an impl of a specific camera?
+      std::string cam_model = intr->name();
+      // get corresponding 2d point from camera
+      Eigen::Vector2d p_2d =
+          feature_corners.find(tcid)->second.corners[feature_id];
 
-        // create cost functor from cam_model and 2d point
-        BundleAdjustmentReprojectionCostFunctor* costFunctor =
-            new BundleAdjustmentReprojectionCostFunctor(p_2d, cam_model);
+      // create cost functor from cam_model and 2d point
+      BundleAdjustmentReprojectionCostFunctor* costFunctor =
+          new BundleAdjustmentReprojectionCostFunctor(p_2d, cam_model);
 
-        // create cost function
-        ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
-            BundleAdjustmentReprojectionCostFunctor, DIM_RESIDUAL,
-            Sophus::SE3d::num_parameters, DIM_VECTOR, DIM_INTR>(costFunctor);
+      // create cost function
+      ceres::CostFunction* costFunction = new ceres::AutoDiffCostFunction<
+          BundleAdjustmentReprojectionCostFunctor, DIM_RESIDUAL,
+          Sophus::SE3d::num_parameters, DIM_VECTOR, DIM_INTR>(costFunctor);
 
-        // add residual block
-        problem.AddResidualBlock(costFunction, loss_function, T_w_c->data(),
-                                 p3d->data(), intr->data());
-        // set parameterization of T_w_c
-        problem.SetParameterization(T_w_c->data(), local_parameterization);
+      // add residual block
+      problem.AddResidualBlock(costFunction, loss_function, T_w_c->data(),
+                               p3d->data(), intr->data());
+      // set parameterization of T_w_c
+      problem.SetParameterization(T_w_c->data(), local_parameterization);
 
-        // set intrinsics constant
-        if (!options.optimize_intrinsics) {
-          problem.SetParameterBlockConstant(intr->data());
-        }
-        // fix certain cameras
-        if (fixed_cameras.find(tcid) != fixed_cameras.end()) {
-          problem.SetParameterBlockConstant(T_w_c->data());
-        }
+      // set intrinsics constant
+      if (!options.optimize_intrinsics) {
+        problem.SetParameterBlockConstant(intr->data());
+      }
+      // fix certain cameras
+      if (fixed_cameras.find(tcid) != fixed_cameras.end()) {
+        problem.SetParameterBlockConstant(T_w_c->data());
       }
     }
-    // Solve
-    ceres::Solver::Options ceres_options;
-    ceres_options.max_num_iterations = options.max_num_iterations;
-    ceres_options.linear_solver_type = ceres::SPARSE_SCHUR;
-    ceres::Solver::Summary summary;
-    Solve(ceres_options, &problem, &summary);
-    switch (options.verbosity_level) {
-      // 0: silent
-      case 1:
-        std::cout << summary.BriefReport() << std::endl;
-        break;
-      case 2:
-        std::cout << summary.FullReport() << std::endl;
-        break;
-    }
   }
+  // Solve
+  ceres::Solver::Options ceres_options;
+  ceres_options.max_num_iterations = options.max_num_iterations;
+  ceres_options.linear_solver_type = ceres::SPARSE_SCHUR;
+  ceres::Solver::Summary summary;
+  Solve(ceres_options, &problem, &summary);
+  switch (options.verbosity_level) {
+    // 0: silent
+    case 1:
+      std::cout << summary.BriefReport() << std::endl;
+      break;
+    case 2:
+      std::cout << summary.FullReport() << std::endl;
+      break;
+  }
+}
 
-  }  // namespace visnav
+}  // namespace visnav
