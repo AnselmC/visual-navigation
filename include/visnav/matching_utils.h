@@ -116,7 +116,8 @@ void findInliersRansac(const KeypointsData& kd1, const KeypointsData& kd2,
   adapter.setR12(transformation.block<3, 3>(0, 0));
   transformation = opengv::relative_pose::optimize_nonlinear(adapter, inliers);
 
-  ran.sac_model_->selectWithinDistance(transformation, ransac_thresh, inliers);
+  ransac.sac_model_->selectWithinDistance(transformation, ransac_thresh,
+                                          inliers);
 
   if ((int)inliers.size() >= ransac_min_inliers) {
     for (auto& inlier : inliers) {
