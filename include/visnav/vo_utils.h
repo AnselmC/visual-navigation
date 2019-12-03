@@ -134,19 +134,22 @@ void find_matches_landmarks(
     // get best match from distances
     // distance needs to be smaller than feature_match_max_dist and at least
     // feature_match_test_next_best bigger than second smallest distance
-    int smallest_dist, second_smallest_dist;
-    auto min_element = std::min_element(distances.begin(), distances.end());
-    smallest_dist = *min_element;
-    int min_idx = min_element - distances.begin();
-    std::sort(distances.begin(), distances.end());
-    second_smallest_dist = distances.at(1);
-    if (smallest_dist <= feature_match_max_dist and
-        smallest_dist * feature_match_test_next_best <= second_smallest_dist) {
-      // valid match
-      // TODO: what is featureid1? Doesn't make sense to me..
-      // would only make sense to save track id
-      TrackId match = candidate_points.at(min_idx).second;
-      md.matches.push_back(std::make_pair(featureid0, match));
+    if (distances.size() > 0) {
+      int smallest_dist, second_smallest_dist;
+      auto min_element = std::min_element(distances.begin(), distances.end());
+      smallest_dist = *min_element;
+      int min_idx = min_element - distances.begin();
+      std::sort(distances.begin(), distances.end());
+      if (distances.size() > 1) {
+        second_smallest_dist = distances.at(1);
+      } else {
+        second_smallest_dist = smallest_dist * feature_match_max_dist + 1;
+      }
+      if (smallest_dist < feature_match_max_dist and
+          smallest_dist * feature_match_test_next_best < second_smallest_dist) {
+        TrackId match = candidate_points.at(min_idx).second;
+        md.matches.push_back(std::make_pair(featureid0, match));
+      }
     }
   }
 }
