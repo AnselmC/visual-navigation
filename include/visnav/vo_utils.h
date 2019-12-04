@@ -241,7 +241,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
       if (stereo_match.first == featureid0) {
         FeatureId featureid1 = stereo_match.second;
         landmarks.at(trackid).obs.insert(std::make_pair(tcidr, featureid1));
-        if(foundFirst){
+        if (foundFirst) {
           existingFeatures.push_back(std::make_pair(featureid0, featureid1));
         }
       }
@@ -251,7 +251,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   }
   // add new landmarks
   for (auto& stereo_match : md_stereo.inliers) {
-     if (std::find(existingFeatures.begin(), existingFeatures.end(),
+    if (std::find(existingFeatures.begin(), existingFeatures.end(),
                   stereo_match) != existingFeatures.end()) {
       continue;  // already a landmark
     }
