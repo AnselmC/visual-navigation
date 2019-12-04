@@ -297,20 +297,19 @@ void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
     cameras.erase(tcid1);
     for (auto it = landmarks.cbegin(); it != landmarks.cend();) {
       // remove associated observations
-      Landmark landmark = (*it).second;
-      for (auto obs_it = landmark.obs.cbegin();
-           obs_it != landmark.obs.cend();) {
+      for (auto obs_it = it->second.obs.cbegin();
+           obs_it != it->second.obs.cend();) {
         auto obs = *obs_it;
         if (obs.first == tcid0 or obs.first == tcid1) {
-          landmark.obs.erase(obs_it);
+          obs_it = landmarks.at(it->first).obs.erase(obs_it);
         } else {
           ++obs_it;
         }
       }
       // move landmarks with no more observations to old_landmarks
-      if (landmark.obs.size() == 0) {
+      if (it->second.obs.size() == 0) {
         old_landmarks.insert(*it);
-        landmarks.erase(it);
+        it = landmarks.erase(it);
       } else {
         ++it;
       }
