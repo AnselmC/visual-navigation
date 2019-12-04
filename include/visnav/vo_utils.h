@@ -225,27 +225,35 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   const Eigen::Matrix3d R_0_1 = T_0_1.rotationMatrix();
 
   // add observations to existing landmarks
-  std::vector<FeatureId> existingFeatures;
+  std::vector<std::pair<FeatureId, FeatureId>> existingFeatures;
+  int inlier_index = 0;
+  bool foundFirst = false;
   for (auto& match : md.matches) {
     FeatureId featureid0 = match.first;
     TrackId trackid = match.second;
 
-    if (std::find(inliers.begin(), inliers.end(), trackid) != inliers.end()) {
-      existingFeatures.push_back(featureid0);
+    if (std::find(inliers.begin(), inliers.end(), inlier_index) !=
+        inliers.end()) {
       landmarks.at(trackid).obs.insert(std::make_pair(tcidl, featureid0));
+      foundFirst = true;
     }
     for (auto& stereo_match : md_stereo.inliers) {
       if (stereo_match.first == featureid0) {
         FeatureId featureid1 = stereo_match.second;
         landmarks.at(trackid).obs.insert(std::make_pair(tcidr, featureid1));
+        if(foundFirst){
+          existingFeatures.push_back(std::make_pair(featureid0, featureid1));
+        }
       }
     }
+    inlier_index++;
+    foundFirst = false;
   }
   // add new landmarks
   for (auto& stereo_match : md_stereo.inliers) {
-    if (std::find(existingFeatures.begin(), existingFeatures.end(),
-                  stereo_match.first) != existingFeatures.end()) {
-      break;  // already a landmark
+     if (std::find(existingFeatures.begin(), existingFeatures.end(),
+                  stereo_match) != existingFeatures.end()) {
+      continue;  // already a landmark
     }
     Eigen::Vector2d p2d0 = kdl.corners.at(stereo_match.first);
     Eigen::Vector2d p2d1 = kdr.corners.at(stereo_match.second);
