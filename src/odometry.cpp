@@ -36,6 +36,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <iostream>
 #include <thread>
 
+#include <yaml-cpp/yaml.h>
+
 #include <sophus/se3.hpp>
 
 #include <tbb/concurrent_unordered_map.h>
@@ -98,6 +100,8 @@ std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
 std::set<FrameId> kf_frames;
+
+std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d>> groundtruths;
 
 std::shared_ptr<std::thread> opt_thread;
 
@@ -165,6 +169,8 @@ pangolin::Var<bool> show_outlier_observations("ui.show_outlier_obs", false,
 pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
+pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
+                                     true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
 pangolin::Var<bool> show_old_points3d("hidden.show_old_points3d", true, false,
                                       true);
@@ -635,6 +641,7 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
+  const u_int8_t color_groundtruth[3]{255, 155, 0};          // orange
   const u_int8_t color_camera_current[3]{255, 0, 0};         // red
   const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
   const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
@@ -662,6 +669,15 @@ void draw_scene() {
       }
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
+  }
+
+  // render ground truth
+  if (show_groundtruth) {
+    for (auto it = groundtruths.begin();
+         it <= groundtruths.begin() + current_frame; it++) {
+      render_camera(std::get<0>((*it)).matrix(), 3.0f, color_groundtruth, 0.1f);
+      render_camera(std::get<1>((*it)).matrix(), 3.0f, color_groundtruth, 0.1f);
+    }
   }
 
   // render points
@@ -704,11 +720,91 @@ void draw_scene() {
     glEnd();
   }
 }
+void load_groundtruth(const std::string& dataset_path) {
+  // Load transformation from cameras to baseframe
+  const std::string caml_path = dataset_path + "/cam0/sensor.yaml";
+  const std::string camr_path = dataset_path + "/cam1/sensor.yaml";
+  YAML::Node caml_conf = YAML::LoadFile(caml_path);
+  YAML::Node camr_conf = YAML::LoadFile(camr_path);
+
+  Eigen::Matrix4d mat_cl(
+      caml_conf["T_BS"]["data"].as<std::vector<double>>().data());
+  std::cout << mat_cl << std::endl;
+  Sophus::SE3d T_i_cl(mat_cl.transpose());
+  Eigen::Matrix4d mat_cr(
+      camr_conf["T_BS"]["data"].as<std::vector<double>>().data());
+  std::cout << mat_cr << std::endl;
+  Sophus::SE3d T_i_cr(mat_cr.transpose());
+
+  // Load IMU to world transformations
+  const std::string groundtruth_path =
+      dataset_path + "/state_groundtruth_estimate0/data.csv";
+  std::ifstream times(groundtruth_path);
+  // int64_t timestamp;
+  int id = 0;
+  Eigen::Vector3d trans;
+  std::vector<double> init_vals;
+  while (times) {
+    std::string line;
+    std::getline(times, line);
+    // ignore first and last line
+    if (line[0] == '#' || id > 2700) continue;
+    // timestamp = std::strtoll(line.substr(0, 19), NULL, 10);
+    std::stringstream ls(line);
+    std::string cell;
+    std::map<std::string, double> cells;
+    std::vector<std::string> elems = {"x", "y", "z", "qw", "qx", "qy", "qz"};
+    std::string name;
+    double value;
+    int j = 0;
+    while (std::getline(ls, cell, ',')) {
+      if (j == 0) {
+        j++;
+        continue;
+      }
+      if ((uint)j > elems.size()) break;  // only want elements 1-8
+      name = elems.at(j - 1);
+      value = std::stod(cell);
+      if (id == 0) {
+        init_vals.push_back(value);
+      }
+      value -= init_vals.at(j - 1);
+      cells.insert(std::make_pair(name, value));
+      j++;
+    }
+    // for (auto& elem : cells) {
+    //  std::cout << elem.first << ":" << elem.second << std::endl;
+    //}
+    trans << cells["x"], cells["y"], cells["z"];
+    Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
+
+    // if (id == 0) {
+    //  x0 = x;
+    //  y0 = y;
+    //  z0 = z;
+    //  qw0 = qw;
+    //  qx0 = qx;
+    //  qy0 = qy;
+    //  qz0 = qz;
+    //}
+    Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
+    // std::cout << rot << std::endl;
+    // std::cout << trans << std::endl;
+    Sophus::SE3d T(rot, trans);
+    Sophus::SE3d T_w_cl = T * T_i_cl;
+    Sophus::SE3d T_w_cr = T * T_i_cr;
+    groundtruths.push_back(std::make_tuple(T_w_cl, T_w_cr));
+
+    id++;
+  }
+  std::cout << "Loaded " << id << " groundtruth values" << std::endl;
+}
 
 // Load images, calibration, and features / matches if available
 void load_data(const std::string& dataset_path, const std::string& calib_path) {
   const std::string timestams_path = dataset_path + "/cam0/data.csv";
 
+  load_groundtruth(dataset_path);
   {
     std::ifstream times(timestams_path);
 
@@ -738,7 +834,6 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
       }
 
       timestamps.push_back(timestamp);
-
       for (int i = 0; i < NUM_CAMS; i++) {
         TimeCamId tcid(id, i);
 
