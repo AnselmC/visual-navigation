@@ -641,7 +641,8 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_groundtruth[3]{255, 155, 0};          // orange
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
   const u_int8_t color_camera_current[3]{255, 0, 0};         // red
   const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
   const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
@@ -675,8 +676,10 @@ void draw_scene() {
   if (show_groundtruth) {
     for (auto it = groundtruths.begin();
          it <= groundtruths.begin() + current_frame; it++) {
-      render_camera(std::get<0>((*it)).matrix(), 3.0f, color_groundtruth, 0.1f);
-      render_camera(std::get<1>((*it)).matrix(), 3.0f, color_groundtruth, 0.1f);
+      render_camera(std::get<0>((*it)).matrix(), 3.0f, color_groundtruth_left,
+                    0.1f);
+      render_camera(std::get<1>((*it)).matrix(), 3.0f, color_groundtruth_right,
+                    0.1f);
     }
   }
 
@@ -729,27 +732,23 @@ void load_groundtruth(const std::string& dataset_path) {
 
   Eigen::Matrix4d mat_cl(
       caml_conf["T_BS"]["data"].as<std::vector<double>>().data());
-  std::cout << mat_cl << std::endl;
-  Sophus::SE3d T_i_cl(mat_cl.transpose());
+  Sophus::SE3d T_cl_i(mat_cl.transpose());
   Eigen::Matrix4d mat_cr(
       camr_conf["T_BS"]["data"].as<std::vector<double>>().data());
-  std::cout << mat_cr << std::endl;
-  Sophus::SE3d T_i_cr(mat_cr.transpose());
+  Sophus::SE3d T_cr_i(mat_cr.transpose());
 
   // Load IMU to world transformations
   const std::string groundtruth_path =
       dataset_path + "/state_groundtruth_estimate0/data.csv";
   std::ifstream times(groundtruth_path);
-  // int64_t timestamp;
   int id = 0;
   Eigen::Vector3d trans;
-  std::vector<double> init_vals;
+  Sophus::SE3d T_w_ref;
   while (times) {
     std::string line;
     std::getline(times, line);
     // ignore first and last line
     if (line[0] == '#' || id > 2700) continue;
-    // timestamp = std::strtoll(line.substr(0, 19), NULL, 10);
     std::stringstream ls(line);
     std::string cell;
     std::map<std::string, double> cells;
@@ -765,34 +764,20 @@ void load_groundtruth(const std::string& dataset_path) {
       if ((uint)j > elems.size()) break;  // only want elements 1-8
       name = elems.at(j - 1);
       value = std::stod(cell);
-      if (id == 0) {
-        init_vals.push_back(value);
-      }
-      value -= init_vals.at(j - 1);
       cells.insert(std::make_pair(name, value));
       j++;
     }
-    // for (auto& elem : cells) {
-    //  std::cout << elem.first << ":" << elem.second << std::endl;
-    //}
     trans << cells["x"], cells["y"], cells["z"];
     Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
 
-    // if (id == 0) {
-    //  x0 = x;
-    //  y0 = y;
-    //  z0 = z;
-    //  qw0 = qw;
-    //  qx0 = qx;
-    //  qy0 = qy;
-    //  qz0 = qz;
-    //}
     Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
-    // std::cout << rot << std::endl;
-    // std::cout << trans << std::endl;
-    Sophus::SE3d T(rot, trans);
-    Sophus::SE3d T_w_cl = T * T_i_cl;
-    Sophus::SE3d T_w_cr = T * T_i_cr;
+
+    Sophus::SE3d T_imu_ref(rot, trans);
+    if (id == 0) {
+      T_w_ref = T_imu_ref;
+    }
+    Sophus::SE3d T_w_cl = T_w_ref * T_imu_ref.inverse() * T_cl_i.inverse();
+    Sophus::SE3d T_w_cr = T_w_ref * T_imu_ref.inverse() * T_cr_i.inverse();
     groundtruths.push_back(std::make_tuple(T_w_cl, T_w_cr));
 
     id++;
