@@ -276,6 +276,82 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   }
 }
 
+void get_landmarks_of_kf(const FrameId kf, Landmarks& landmarks, std::set<Landmark>& selected_landmarks) {
+  //search through all landmarks for the ones observed in this kf and put into selected_landmarks
+  TimeCamId tcidl = std::pair<FrameId, CameraId>(kf, 0);
+  TimeCamId tcidr = std::pair<FrameId, CameraId>(kf, 1);
+  for (auto it = landmarks.cbegin(); it != landmarks.cend();) {
+    //Problems: adding the same landmark twice if observed by left and right cameras?
+    //Solution: using a "set" as data structure for selected_landmarks
+    if (it->second.obs.find(tcidl) != it->second.obs.end() || it->second.obs.find(tcidr) != it->second.obs.end()) {
+      selected_landmarks.insert(it->second);
+    }
+  }
+}
+
+void remove_kf(std::set<FrameId>& kf_frames, FrameId kf, 
+                Cameras& cameras, Landmarks& old_landmarks, Landmarks& landmarks) {
+  //remove keyframe from keyframes
+  kf_frames.erase(kf);
+  TimeCamId tcidl = std::pair<FrameId, CameraId>(currrent_kf, 0);
+  TimeCamId tcidr = std::pair<FrameId, CameraId>(currrent_kf, 1);
+  cameras.erase(tcidl);
+  cameras.erase(tcidr);
+
+  //remove this keyframe if stored in observations of existing landmarks
+  for (auto it = landmarks.cbegin(); it != landmarks.cend();) {
+      // remove associated observations
+      for (auto obs_it = it->second.obs.cbegin();
+           obs_it != it->second.obs.cend();) {
+        auto obs = *obs_it;
+        if (obs.first == tcidl or obs.first == tcidr) {
+          obs_it = landmarks.at(it->first).obs.erase(obs_it);
+        } else {
+          ++obs_it;
+        }
+      }
+      // move landmarks with no more observations to old_landmarks
+      if (it->second.obs.size() == 0) {
+        old_landmarks.insert(*it);
+        it = landmarks.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
+}
+
+void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
+                          Cameras& cameras, Landmarks& landmarks,
+                          Landmarks& old_landmarks,
+                          std::set<FrameId>& kf_frames) {
+  //do we have to insert the tcidl passed into this funciton???
+  kf_frames.emplace(tcidl.first);
+
+  
+  for (auto current_kf = kf_frames.cbegin(); it != kf_frames.cend();) {
+    std::set<Landmark> selected_landmarks;
+    //Problem: we need the TimeCamId to look up the observations of each landmark, but the kf_frames here are only FrameId
+    //Does this mean that we only store the left camera as keyframe? And we only look up the left camera observations in the 
+    //of landmarks?
+    //TimeCamId tcid = std::pair<FrameId, CameraId>(currrent_kf, 0);
+    get_landmarks_of_kf(current_kf, landmarks, selected_landmarks);
+    int overlap_count = 0;
+    for (auto current_landmark = selected_landmarks.cbegin(); current_landmark != selected_landmarks.cend();) {
+      //if at least three other kf observe this landmark, increment the overlap_count
+      if (current_landmark->obs.size() > 3) {
+        overlap_count++;
+      }
+    }
+    double overlap_percentage = overlap_count/selected_landmarks.size();
+    if (overlap_percentage >= 0.9) {
+      remove_kf(kf_frames, current_kf, cameras, old_landmarks, landmarks);
+    }
+    
+  }
+}
+
+/*
 void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
                           Cameras& cameras, Landmarks& landmarks,
                           Landmarks& old_landmarks,
@@ -316,4 +392,5 @@ void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
     }
   }
 }
+*/
 }  // namespace visnav
