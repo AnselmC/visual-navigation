@@ -757,7 +757,6 @@ void load_groundtruth(const std::string& dataset_path) {
       dataset_path + "/state_groundtruth_estimate0/data.csv";
   std::ifstream times(groundtruth_path);
   uint id = 0;
-  std::vector<uint> ids_used;
   Eigen::Vector3d trans;
   Sophus::SE3d T_w_wref;
   Sophus::SE3d T_cl_cr;
@@ -791,8 +790,6 @@ void load_groundtruth(const std::string& dataset_path) {
       continue;
     }
 
-    ids_used.push_back(id);
-
     trans << cells["x"], cells["y"], cells["z"];
     Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
 
@@ -810,10 +807,6 @@ void load_groundtruth(const std::string& dataset_path) {
     id++;
   }
   std::cout << "Loaded " << id << " groundtruth values" << std::endl;
-  std::cout << "Ids used:" << std::endl;
-  for (auto& id_used : ids_used) {
-    std::cout << id_used << std::endl;
-  }
 }
 
 // Load images, calibration, and features / matches if available
@@ -943,8 +936,15 @@ bool new_next_step() {
 
   // make_keyframe_decision
   /*MAPPING*/
-  bool mapping_busy = !opt_running && opt_finished;
-  if (!mapping_busy) {
+  //`bool mapping_busy = !opt_running && !opt_finished;
+  //`make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
+  //`                       frames_since_last_kf, new_kf_min_inliers,
+  // mapping_busy, `                       md, kf_frames, landmarks);
+  if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
+      !opt_finished) {
+    take_keyframe = true;
+  }
+  if (!opt_running && opt_finished) {
     opt_thread->join();
     landmarks = landmarks_opt;
     cameras = cameras_opt;
@@ -952,10 +952,10 @@ bool new_next_step() {
 
     opt_finished = false;
   }
-  make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
-                         frames_since_last_kf, new_kf_min_inliers, mapping_busy,
-                         md, kf_frames, landmarks);
+
   if (take_keyframe) {
+    take_keyframe = false;
+    std::cout << "Adding as keyframe..." << std::endl;
     MatchData md_stereo;
     KeypointsData kdr;
 
@@ -990,7 +990,9 @@ bool new_next_step() {
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
                       md_stereo, md, landmarks, next_landmark_id);
 
-    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
+    // remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
+    remove_old_keyframes_old(tcidl, max_num_kfs, cameras, landmarks,
+                             old_landmarks, kf_frames);
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
@@ -1215,7 +1217,7 @@ void optimize() {
     num_obs += kv.second.obs.size();
   }
 
-  std::cerr << "Optimizing map with " << cameras.size() << ", "
+  std::cerr << "Optimizing map with " << cameras.size() << " cameras, "
             << landmarks.size() << " points and " << num_obs << " observations."
             << std::endl;
 

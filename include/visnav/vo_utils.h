@@ -355,7 +355,7 @@ void make_keyframe_decision(bool& take_keyframe,
     bool cond1 = !mapping_busy;
     //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
     bool cond2 = md.matches.size() > (uint)new_kf_min_inliers;
-    bool cond3 = max_count / md.matches.size() > 0.9;
+    bool cond3 = (double)max_count / (double)md.matches.size() > 0.9;
     take_keyframe = cond1 && cond2 && cond3;
   }
 }
@@ -403,12 +403,11 @@ void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
   }
 }
 
-/*
-void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
-                          Cameras& cameras, Landmarks& landmarks,
-                          Landmarks& old_landmarks,
-                          std::set<FrameId>& kf_frames) {
-  kf_frames.emplace(tcidl.first);
+void remove_old_keyframes_old(const TimeCamId tcidl, const int max_num_kfs,
+                              Cameras& cameras, Landmarks& landmarks,
+                              Landmarks& old_landmarks,
+                              std::set<FrameId>& kf_frames) {
+  // kf_frames.emplace(tcidl.first);
 
   // TODO SHEET 5: Remove old cameras and observations if the number of
   // keyframe pairs (left and right image is a pair) is larger than
@@ -444,5 +443,5 @@ void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
     }
   }
 }
-*/
+
 }  // namespace visnav
