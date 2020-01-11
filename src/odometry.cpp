@@ -856,11 +856,13 @@ bool next_step() {
     cameras[tcidl].T_w_c = current_pose;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
+    add_new_keyframe(tcidl, kf_frames);
+
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
                       md_stereo, md, landmarks, next_landmark_id);
 
-    remove_old_keyframes(tcidl, max_num_kfs, cameras, landmarks, old_landmarks,
-                         kf_frames);
+    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
+    std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
     current_pose = cameras[tcidl].T_w_c;
