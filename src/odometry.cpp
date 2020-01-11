@@ -95,6 +95,7 @@ int current_frame = 0;
 Sophus::SE3d current_pose;
 bool take_keyframe = true;
 TrackId next_landmark_id = 0;
+int frames_since_last_kf = 0;
 
 std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
@@ -190,6 +191,8 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
                                         50);
 
 pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 80, 1, 200);
+pangolin::Var<int> max_frames_since_last_kf("hidden.frames_since_last_kf", 20,
+                                            1, 100);
 
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
@@ -1036,6 +1039,7 @@ bool next_step() {
 
     current_pose = T_w_c;
 
+    bool mapping_busy = opt_running && !opt_finished;
     if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
         !opt_finished) {
       take_keyframe = true;
