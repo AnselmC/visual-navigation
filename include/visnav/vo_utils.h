@@ -355,9 +355,13 @@ void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
         overlap_count++;
       }
     }
-    double overlap_percentage = overlap_count / selected_landmarks.size();
+    std::cout << "Overlap count: " << overlap_count << std::endl;
+    std::cout << "Selected landmarks size: " << selected_landmarks.size()
+              << std::endl;
+    double overlap_percentage =
+        (double)overlap_count / (double)selected_landmarks.size();
     std::cout << "Overlap percentage: " << overlap_percentage << std::endl;
-    if (overlap_percentage >= 0.9) {
+    if (overlap_percentage >= 0.4) {
       remove_kf(kf_frames, *current_kf, cameras, old_landmarks, landmarks);
     }
   }
