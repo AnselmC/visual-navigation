@@ -324,6 +324,42 @@ void remove_kf(std::set<FrameId>& kf_frames, FrameId current_kf,
   }
 }
 
+void make_keyframe_decision(bool& take_keyframe,
+                            const int& max_frames_since_last_kf,
+                            const int& frames_since_last_kf,
+                            const int& new_kf_min_inliers,
+                            const bool& mapping_busy, const MatchData& md,
+                            const std::set<FrameId>& kf_frames,
+                            const Landmarks& landmarks) {
+  int max_count = 0;
+
+  for (auto& kf : kf_frames) {
+    int count = 0;
+    TimeCamId tcidl = std::make_pair(kf, 0);
+    TimeCamId tcidr = std::make_pair(kf, 1);
+    for (auto& match : md.matches) {
+      TrackId trackId = match.second;
+      Landmark landmark = landmarks.at(trackId);
+      bool kf_sees_landmark = landmark.obs.find(tcidl) != landmark.obs.end() ||
+                              landmark.obs.find(tcidr) != landmark.obs.end();
+      if (kf_sees_landmark) {
+        count++;
+      }
+    }
+    if (count > max_count) {
+      max_count = count;
+    }
+
+    // TODO: change AND to OR and ensure mapping/optimization is interrupted if
+    // frames_since_last_kf > 20
+    bool cond1 = !mapping_busy;
+    //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
+    bool cond2 = md.matches.size() > (uint)new_kf_min_inliers;
+    bool cond3 = max_count / md.matches.size() > 0.9;
+    take_keyframe = cond1 && cond2 && cond3;
+  }
+}
+
 void add_new_keyframe(const TimeCamId& tcidl, std::set<FrameId>& kf_frames) {
   kf_frames.emplace(tcidl.first);
 }
@@ -335,8 +371,8 @@ void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
        current_kf++) {
     std::set<TrackId> selected_landmarks;
     // Problem: we need the TimeCamId to look up the observations of each
-    // landmark, but the kf_frames here are only FrameId Does this mean that we
-    // only store the left camera as keyframe? And we only look up the left
+    // landmark, but the kf_frames here are only FrameId Does this mean that
+    // we only store the left camera as keyframe? And we only look up the left
     // camera observations in the of landmarks? TimeCamId tcid =
     // std::pair<FrameId, CamId>(currrent_kf, 0);
     get_landmarks_of_kf(*current_kf, landmarks, selected_landmarks);

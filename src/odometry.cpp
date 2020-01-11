@@ -77,6 +77,7 @@ void change_display_to_image(const TimeCamId& tcid);
 void draw_scene();
 void load_data(const std::string& path, const std::string& calib_path);
 bool next_step();
+bool new_next_step();
 void optimize();
 void compute_projections();
 
@@ -191,8 +192,8 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
                                         50);
 
 pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 80, 1, 200);
-pangolin::Var<int> max_frames_since_last_kf("hidden.frames_since_last_kf", 20,
-                                            1, 100);
+pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
+                                            20, 1, 100);
 
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
@@ -223,7 +224,7 @@ pangolin::Var<bool> continue_next("ui.continue_next", false, false, true);
 
 using Button = pangolin::Var<std::function<void(void)>>;
 
-Button next_step_btn("ui.next_step", &next_step);
+Button next_step_btn("ui.next_step", &new_next_step);
 
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI and Boilerplate Implementation
@@ -369,7 +370,7 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
-        continue_next = next_step();
+        continue_next = new_next_step();
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -377,7 +378,7 @@ int main(int argc, char** argv) {
     }
   } else {
     // non-gui mode: Process all frames, then exit
-    while (next_step()) {
+    while (new_next_step()) {
       // nop
     }
   }
@@ -678,9 +679,6 @@ void draw_scene() {
   // render ground truth
   if (show_groundtruth) {
     int64_t ts = timestamps.at(current_frame);
-    Eigen::Matrix4d left = std::get<0>(groundtruths.at(current_frame)).matrix();
-    Eigen::Matrix4d right =
-        std::get<1>(groundtruths.at(current_frame)).matrix();
     glPointSize(3.0);
     glBegin(GL_POINTS);
     glColor3ubv(color_groundtruth_left);
@@ -787,22 +785,12 @@ void load_groundtruth(const std::string& dataset_path) {
       }
       j++;
     }
-    int64_t ts_frames = timestamps.at(id);
     // time stamp from GT is older than time stamp from frames, go to next GT ts
     if (std::find(timestamps.begin(), timestamps.end(), ts) ==
         timestamps.end()) {
       continue;
     }
-    // if (ts < ts_frames) {
-    //  continue;
-    //}
-    // while (ts > ts_frames) {  // continue to next frame value
-    //  ts_frames = timestamps.at(++id);
-    //}
-    //// time stamp from GT is again older, continue to next GT ts
-    // if (ts != ts_frames) {
-    //  continue;
-    //}
+
     ids_used.push_back(id);
 
     trans << cells["x"], cells["y"], cells["z"];
@@ -910,114 +898,111 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 ///////////////////////////////////////////////////////////////////////////////
 
 bool new_next_step() {
-    if (current_frame >= int(images.size()) / NUM_CAMS) return false;
+  if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
-    const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+  /* TRACKING */
+  const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
 
-    TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
+  TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
 
-    std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
-        projected_points;
-    std::vector<TrackId> projected_track_ids;
+  std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
+      projected_points;
+  std::vector<TrackId> projected_track_ids;
 
-    project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
-                      cam_z_threshold, projected_points, projected_track_ids);
+  project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
+                    cam_z_threshold, projected_points, projected_track_ids);
 
-    std::cout << "Projected " << projected_track_ids.size() << " points."
-              << std::endl;
+  std::cout << "Projected " << projected_track_ids.size() << " points."
+            << std::endl;
 
-    KeypointsData kdl;
+  KeypointsData kdl;
 
-    pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
+  pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
 
-    detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
+  detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
+                                rotate_features);
+  feature_corners[tcidl] = kdl;
+
+  MatchData md;
+  find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
+                         projected_track_ids, match_max_dist_2d,
+                         feature_match_max_dist, feature_match_test_next_best,
+                         md);
+
+  std::cout << "Found " << md.matches.size() << " matches." << std::endl;
+
+  Sophus::SE3d T_w_c;
+  std::vector<int> inliers;
+
+  localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
+                  reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
+                  inliers);
+  current_pose = T_w_c;
+  // Do we update the current_pose?
+  // Or do we only do this when take_keyframe = true?
+
+  // make_keyframe_decision
+  /*MAPPING*/
+  bool mapping_busy = !opt_running && opt_finished;
+  if (!mapping_busy) {
+    opt_thread->join();
+    landmarks = landmarks_opt;
+    cameras = cameras_opt;
+    calib_cam = calib_cam_opt;
+
+    opt_finished = false;
+  }
+  make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
+                         frames_since_last_kf, new_kf_min_inliers, mapping_busy,
+                         md, kf_frames, landmarks);
+  if (take_keyframe) {
+    MatchData md_stereo;
+    KeypointsData kdr;
+
+    pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
+
+    detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
-    feature_corners[tcidl] = kdl;
 
-    MatchData md;
-    find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
-                           projected_track_ids, match_max_dist_2d,
-                           feature_match_max_dist, feature_match_test_next_best,
-                           md);
+    md_stereo.T_i_j = T_0_1;
 
-    std::cout << "Found " << md.matches.size() << " matches." << std::endl;
+    Eigen::Matrix3d E;
+    computeEssential(T_0_1, E);
 
-    Sophus::SE3d T_w_c;
-    std::vector<int> inliers;
-
-    localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
-                    reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
-                    inliers);
-    current_pose = T_w_c;
-    //Do we update the current_pose?
-    //Or do we only do this when take_keyframe = true?
-    //cameras[tcidl].T_w_c = current_pose;
-
-    if (take_keyframe) {
-      //reset the flag to false??
-      take_keyframe = false;
-
-      MatchData md_stereo;
-      KeypointsData kdr;
-
-      pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
-
-      detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
-                                  rotate_features);
-
-      md_stereo.T_i_j = T_0_1;
-
-      Eigen::Matrix3d E;
-      computeEssential(T_0_1, E);
-
-      matchDescriptors(kdl.corner_descriptors, kdr.corner_descriptors,
+    matchDescriptors(kdl.corner_descriptors, kdr.corner_descriptors,
                      md_stereo.matches, feature_match_max_dist,
                      feature_match_test_next_best);
 
-      findInliersEssential(kdl, kdr, calib_cam.intrinsics[0],
+    findInliersEssential(kdl, kdr, calib_cam.intrinsics[0],
                          calib_cam.intrinsics[1], E, 1e-3, md_stereo);
 
-      std::cout << "KF Found " << md_stereo.inliers.size() << " stereo-matches."
+    std::cout << "KF Found " << md_stereo.inliers.size() << " stereo-matches."
               << std::endl;
 
-      feature_corners[tcidr] = kdr;
-      feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
+    feature_corners[tcidr] = kdr;
+    feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
 
-      cameras[tcidr].T_w_c = current_pose * T_0_1;
+    cameras[tcidl].T_w_c = current_pose;
+    cameras[tcidr].T_w_c = current_pose * T_0_1;
 
-      add_new_keyframe(tcidl, kf_frames);
+    add_new_keyframe(tcidl, kf_frames);
 
-      add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
+    add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
                       md_stereo, md, landmarks, next_landmark_id);
 
-      remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
-      std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
-      optimize();
+    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
+    std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
+    optimize();
 
-      
-      current_pose = cameras[tcidl].T_w_c;
-    }
+    current_pose = cameras[tcidl].T_w_c;
+  }
 
-    if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
-        !opt_finished) {
-      take_keyframe = true;
-    }
+  // update image views
+  change_display_to_image(tcidl);
+  change_display_to_image(tcidr);
 
-    if (!opt_running && opt_finished) {
-      opt_thread->join();
-      landmarks = landmarks_opt;
-      cameras = cameras_opt;
-      calib_cam = calib_cam_opt;
-
-      opt_finished = false;
-    }
-    // update image views
-    change_display_to_image(tcidl);
-    change_display_to_image(tcidr);
-
-    current_frame++;
-    return true;
-
+  current_frame++;
+  return true;
 }
 
 // Execute next step in the overall odometry pipeline. Call this repeatedly
@@ -1150,7 +1135,6 @@ bool next_step() {
 
     current_pose = T_w_c;
 
-    bool mapping_busy = opt_running && !opt_finished;
     if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
         !opt_finished) {
       take_keyframe = true;
