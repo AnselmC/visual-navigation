@@ -1,9 +1,20 @@
+# output files
+*.cereal
+*.json
+# OSX
+*.DS_Store
+*.nosync
+# cmake
 cmake-build*
-.idea
 CMakeLists.txt.user
+# IntelliJ (i think)
+.idea
+# build
 build
+debug
 thirdparty/build-*
-data/V1_01_easy/
+# data
+data/*
 # ignore tex and org files
 *.tex
 *.org
@@ -16,3 +27,4 @@ data/V1_01_easy/
 *.out
 *.log
 *.png
+*_minted*
