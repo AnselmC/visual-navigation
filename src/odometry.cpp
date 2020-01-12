@@ -191,7 +191,12 @@ pangolin::Var<double> feature_match_test_next_best("hidden.match_next_best",
 pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
                                         50);
 
+pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
+pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
+                                              0.9, 0.1, 1.0);
 pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 80, 1, 200);
+pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.9, 0.1,
+                                       1.0);
 pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
                                             20, 1, 100);
 
@@ -936,14 +941,10 @@ bool new_next_step() {
 
   // make_keyframe_decision
   /*MAPPING*/
-  //`bool mapping_busy = !opt_running && !opt_finished;
-  //`make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
-  //`                       frames_since_last_kf, new_kf_min_inliers,
-  // mapping_busy, `                       md, kf_frames, landmarks);
-  if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
-      !opt_finished) {
-    take_keyframe = true;
-  }
+  // if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
+  //    !opt_finished) {
+  //  take_keyframe = true;
+  //}
   if (!opt_running && opt_finished) {
     opt_thread->join();
     landmarks = landmarks_opt;
@@ -952,9 +953,14 @@ bool new_next_step() {
 
     opt_finished = false;
   }
+  bool mapping_busy = opt_running || opt_finished;
+  make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
+                         frames_since_last_kf, new_kf_min_inliers, min_kfs,
+                         max_kref_overlap, mapping_busy, md, kf_frames,
+                         landmarks);
 
   if (take_keyframe) {
-    take_keyframe = false;
+    // take_keyframe = false;
     std::cout << "Adding as keyframe..." << std::endl;
     MatchData md_stereo;
     KeypointsData kdr;
@@ -990,9 +996,10 @@ bool new_next_step() {
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
                       md_stereo, md, landmarks, next_landmark_id);
 
-    // remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
-    remove_old_keyframes_old(tcidl, max_num_kfs, cameras, landmarks,
-                             old_landmarks, kf_frames);
+    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames, min_kfs,
+                         max_redundant_obs_count);
+    // remove_old_keyframes_old(tcidl, max_num_kfs, cameras, landmarks,
+    //                         old_landmarks, kf_frames);
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
@@ -1084,7 +1091,8 @@ bool next_step() {
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
                       md_stereo, md, landmarks, next_landmark_id);
 
-    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames);
+    // remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames,
+    // min_kfs);
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
@@ -1100,7 +1108,6 @@ bool next_step() {
     return true;
   } else {
     TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
-
     std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
         projected_points;
     std::vector<TrackId> projected_track_ids;

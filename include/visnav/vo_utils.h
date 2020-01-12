@@ -296,7 +296,8 @@ void remove_kf(std::set<FrameId>& kf_frames, FrameId current_kf,
                Cameras& cameras, Landmarks& old_landmarks,
                Landmarks& landmarks) {
   // remove keyframe from keyframes
-  kf_frames.erase(current_kf);
+
+  // kf_frames.erase(current_kf);
   TimeCamId tcidl = std::pair<FrameId, CamId>(current_kf, 0);
   TimeCamId tcidr = std::pair<FrameId, CamId>(current_kf, 1);
   cameras.erase(tcidl);
@@ -327,12 +328,17 @@ void remove_kf(std::set<FrameId>& kf_frames, FrameId current_kf,
 void make_keyframe_decision(bool& take_keyframe,
                             const int& max_frames_since_last_kf,
                             const int& frames_since_last_kf,
-                            const int& new_kf_min_inliers,
+                            const int& new_kf_min_inliers, const int& min_kfs,
+                            const double& max_kref_overlap,
                             const bool& mapping_busy, const MatchData& md,
                             const std::set<FrameId>& kf_frames,
                             const Landmarks& landmarks) {
-  int max_count = 0;
+  if (kf_frames.size() < min_kfs) {
+    take_keyframe = !mapping_busy;
+    return;
+  }
 
+  int max_count = 0;
   for (auto& kf : kf_frames) {
     int count = 0;
     TimeCamId tcidl = std::make_pair(kf, 0);
@@ -355,7 +361,13 @@ void make_keyframe_decision(bool& take_keyframe,
     bool cond1 = !mapping_busy;
     //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
     bool cond2 = md.matches.size() > (uint)new_kf_min_inliers;
-    bool cond3 = (double)max_count / (double)md.matches.size() > 0.9;
+    bool cond3 =
+        (double)max_count / (double)md.matches.size() <= max_kref_overlap;
+    std::cout << max_count << std::endl;
+    std::cout << md.matches.size() << std::endl;
+    std::cout << "Condition 1 fulfilled: " << cond1 << std::endl;
+    std::cout << "Condition 2 fulfilled: " << cond2 << std::endl;
+    std::cout << "Condition 3 fulfilled: " << cond3 << std::endl;
     take_keyframe = cond1 && cond2 && cond3;
   }
 }
@@ -366,15 +378,11 @@ void add_new_keyframe(const TimeCamId& tcidl, std::set<FrameId>& kf_frames) {
 
 void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
                           Landmarks& old_landmarks,
-                          std::set<FrameId>& kf_frames) {
-  for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();
-       current_kf++) {
+                          std::set<FrameId>& kf_frames, const int& min_kfs,
+                          const double& max_redundant_obs_count) {
+  if (kf_frames.size() < min_kfs) return;
+  for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
     std::set<TrackId> selected_landmarks;
-    // Problem: we need the TimeCamId to look up the observations of each
-    // landmark, but the kf_frames here are only FrameId Does this mean that
-    // we only store the left camera as keyframe? And we only look up the left
-    // camera observations in the of landmarks? TimeCamId tcid =
-    // std::pair<FrameId, CamId>(currrent_kf, 0);
     get_landmarks_of_kf(*current_kf, landmarks, selected_landmarks);
     int overlap_count = 0;
     for (auto current_landmark = selected_landmarks.cbegin();
@@ -397,8 +405,13 @@ void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
     double overlap_percentage =
         (double)overlap_count / (double)selected_landmarks.size();
     std::cout << "Overlap percentage: " << overlap_percentage << std::endl;
-    if (overlap_percentage >= 0.4) {
+    std::cout << max_redundant_obs_count << std::endl;
+    if (overlap_percentage >= max_redundant_obs_count) {
+      std::cout << "Removing keyframe" << std::endl;
       remove_kf(kf_frames, *current_kf, cameras, old_landmarks, landmarks);
+      current_kf = kf_frames.erase(current_kf);
+    } else {
+      current_kf++;
     }
   }
 }
