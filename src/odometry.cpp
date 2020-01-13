@@ -934,6 +934,7 @@ bool new_next_step() {
 
   /* TRACKING */
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+  prev_pose = current_pose;
 
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
 
@@ -1043,7 +1044,20 @@ bool new_next_step() {
   // update image views
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
-
+  trans_error = calculate_translation_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  running_trans_error += trans_error;
+  ape = calculate_absolute_pose_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  if (current_frame > 1) {
+    rpe = calculate_relative_pose_error(
+        std::get<0>(groundtruths.at(current_frame)),
+        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
+        prev_pose);
+  } else {
+    rpe = 0;
+  }
+  estimated_path.push_back(current_pose.translation());
   current_frame++;
   return true;
 }
