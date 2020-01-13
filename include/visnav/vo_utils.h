@@ -276,6 +276,32 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   }
 }
 
+double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
+                                   const Sophus::SE3d& estimated_pose) {
+  double trans_error =
+      (groundtruth_pose.translation() - estimated_pose.translation()).norm();
+  return trans_error;
+}
+
+double calculate_absolute_pose_error(const Sophus::SE3d& groundtruth_pose,
+                                     const Sophus::SE3d& estimated_pose) {
+  double ape = ((groundtruth_pose.inverse() * estimated_pose).matrix() -
+                Eigen::Matrix4d::Identity())
+                   .norm();
+  return ape;
+}
+
+double calculate_relative_pose_error(const Sophus::SE3d& gt_pose,
+                                     const Sophus::SE3d& gt_pose_prev,
+                                     const Sophus::SE3d& est_pose,
+                                     const Sophus::SE3d& est_pose_prev) {
+  Sophus::SE3d gt_tf = gt_pose_prev.inverse() * gt_pose;
+  Sophus::SE3d est_tf = est_pose_prev.inverse() * est_pose;
+
+  double rpe = calculate_absolute_pose_error(gt_tf, est_tf);
+  return rpe;
+}
+
 void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
                           Cameras& cameras, Landmarks& landmarks,
                           Landmarks& old_landmarks,

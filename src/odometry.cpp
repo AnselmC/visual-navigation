@@ -93,6 +93,7 @@ constexpr int NUM_CAMS = 2;
 
 int current_frame = 0;
 Sophus::SE3d current_pose;
+Sophus::SE3d prev_pose;
 bool take_keyframe = true;
 TrackId next_landmark_id = 0;
 
@@ -102,6 +103,11 @@ std::atomic<bool> opt_finished{false};
 std::set<FrameId> kf_frames;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
+double trans_error = 0;
+double running_trans_error = 0;
+double ape = 0;
+double rpe = 0;
+std::vector<Eigen::Vector3d> estimated_path;
 
 std::shared_ptr<std::thread> opt_thread;
 
@@ -168,6 +174,7 @@ pangolin::Var<bool> show_outlier_observations("ui.show_outlier_obs", false,
                                               false, true);
 pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
+pangolin::Var<bool> show_path("hidden.show_path", true, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
@@ -653,6 +660,17 @@ void draw_scene() {
   const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
   const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
 
+  // render path
+  if (show_path) {
+    glColor3ubv(color_camera_current);
+    glPointSize(3.0);
+    glBegin(GL_POINTS);
+    for (const auto& pt : estimated_path) {
+      pangolin::glVertex(pt);
+    }
+    glEnd();
+  }
+
   // render cameras
   if (show_cameras3d) {
     for (const auto& cam : cameras) {
@@ -674,13 +692,10 @@ void draw_scene() {
 
   // render ground truth
   if (show_groundtruth) {
+    glColor3ubv(color_groundtruth_left);
     int64_t ts = timestamps.at(current_frame);
-    Eigen::Matrix4d left = std::get<0>(groundtruths.at(current_frame)).matrix();
-    Eigen::Matrix4d right =
-        std::get<1>(groundtruths.at(current_frame)).matrix();
     glPointSize(3.0);
     glBegin(GL_POINTS);
-    glColor3ubv(color_groundtruth_left);
     for (auto it = groundtruths.begin();
          it <= groundtruths.begin() + current_frame; it++) {
       Eigen::Vector3d path_point = std::get<0>((*it)).translation();
@@ -689,9 +704,25 @@ void draw_scene() {
       if (ts_gt >= ts) {
         glEnd();
         Eigen::Matrix4d left = std::get<0>((*it)).matrix();
+        Eigen::Vector4d pos = left.col(3);
         Eigen::Matrix4d right = std::get<1>((*it)).matrix();
         render_camera(left, 3.0f, color_groundtruth_left, 0.1f);
         render_camera(right, 3.0f, color_groundtruth_right, 0.1f);
+        glColor3ubv(color_camera_current);
+        glLineWidth(1.0);
+        pangolin::GlFont::I()
+            .Text("Current translation error: %f ", trans_error)
+            .Draw(pos[0], pos[1] + 0.5, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Running translation error: %f ",
+                  running_trans_error / (current_frame + 1))
+            .Draw(pos[0], pos[1] + 1, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Absolute pose error: %f ", ape)
+            .Draw(pos[0], pos[1] + 1.5, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Relative pose error: %f ", rpe)
+            .Draw(pos[0], pos[1] + 2, pos[2]);
         break;
       }
     }
@@ -909,9 +940,10 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 // Execute next step in the overall odometry pipeline. Call this repeatedly
 // until it returns false for automatic execution.
 bool next_step() {
-  if (current_frame >= int(images.size()) / NUM_CAMS) return false;
+  if (current_frame >= int(groundtruths.size())) return false;
 
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+  prev_pose = current_pose;
 
   if (take_keyframe) {
     take_keyframe = false;
@@ -993,8 +1025,6 @@ bool next_step() {
 
     compute_projections();
 
-    current_frame++;
-    return true;
   } else {
     TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
 
@@ -1051,10 +1081,23 @@ bool next_step() {
     // update image views
     change_display_to_image(tcidl);
     change_display_to_image(tcidr);
-
-    current_frame++;
-    return true;
   }
+  trans_error = calculate_translation_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  running_trans_error += trans_error;
+  ape = calculate_absolute_pose_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  if (current_frame > 1) {
+    rpe = calculate_relative_pose_error(
+        std::get<0>(groundtruths.at(current_frame)),
+        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
+        prev_pose);
+  } else {
+    rpe = 0;
+  }
+  estimated_path.push_back(current_pose.translation());
+  current_frame++;
+  return true;
 }
 
 // Compute reprojections for all landmark observations for visualization and
