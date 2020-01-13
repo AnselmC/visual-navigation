@@ -116,6 +116,13 @@ using TrackId = int64_t;
 /// FeatureTracks is a collection {TrackId => FeatureTrack}
 using FeatureTracks = std::unordered_map<TrackId, FeatureTrack>;
 
+/// covisibility graph
+using CovisibilityGraph =
+    std::map<FrameId, std::vector<std::tuple<FrameId, int>>>;
+
+// each keyframe has an associated vector of landmark ids
+using Keyframes = std::map<FrameId, std::vector<TrackId>>;
+
 /// cameras in the map
 struct Camera {
   // camera pose (transforms from camera to world)
