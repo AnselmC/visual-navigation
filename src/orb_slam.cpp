@@ -36,6 +36,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <iostream>
 #include <thread>
 
+#include <yaml-cpp/yaml.h>
+
 #include <sophus/se3.hpp>
 
 #include <tbb/concurrent_unordered_map.h>
@@ -57,7 +59,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <visnav/keypoints.h>
 #include <visnav/map_utils.h>
 #include <visnav/matching_utils.h>
-#include <visnav/vo_utils.h>
+#include <visnav/os_utils.h>
 
 #include <visnav/gui_helper.h>
 #include <visnav/tracks.h>
@@ -91,19 +93,30 @@ constexpr int NUM_CAMS = 2;
 
 int current_frame = 0;
 Sophus::SE3d current_pose;
+Sophus::SE3d prev_pose;
 bool take_keyframe = true;
 TrackId next_landmark_id = 0;
+int frames_since_last_kf = 0;
 
 std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
-std::set<FrameId> kf_frames;
+Keyframes kf_frames;
+
+std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
+double trans_error = 0;
+double running_trans_error = 0;
+double ape = 0;
+double rpe = 0;
+std::vector<Eigen::Vector3d> estimated_path;
 
 std::shared_ptr<std::thread> opt_thread;
 
 /// intrinsic calibration
 Calibration calib_cam;
 Calibration calib_cam_opt;
+
+CovisibilityGraph cov_graph;
 
 /// loaded images
 tbb::concurrent_unordered_map<TimeCamId, std::string> images;
@@ -164,7 +177,10 @@ pangolin::Var<bool> show_outlier_observations("ui.show_outlier_obs", false,
                                               false, true);
 pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
+pangolin::Var<bool> show_path("hidden.show_path", true, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
+pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
+                                     true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
 pangolin::Var<bool> show_old_points3d("hidden.show_old_points3d", true, false,
                                       true);
@@ -183,9 +199,18 @@ pangolin::Var<double> feature_match_test_next_best("hidden.match_next_best",
 pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
                                         50);
 
+pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
+pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
+                                              0.9, 0.1, 1.0);
 pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 80, 1, 200);
+pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.9, 0.1,
+                                       1.0);
+pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
+                                            20, 1, 100);
 
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
+
+pangolin::Var<int> min_weight("hidden.min_weight", 15, 1, 100);
 
 pangolin::Var<double> cam_z_threshold("hidden.cam_z_threshold", 0.1, 1.0, 0.0);
 
@@ -635,6 +660,8 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
   const u_int8_t color_camera_current[3]{255, 0, 0};         // red
   const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
   const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
@@ -644,6 +671,17 @@ void draw_scene() {
   const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
   const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
   const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
+
+  // render path
+  if (show_path) {
+    glColor3ubv(color_camera_current);
+    glPointSize(3.0);
+    glBegin(GL_POINTS);
+    for (const auto& pt : estimated_path) {
+      pangolin::glVertex(pt);
+    }
+    glEnd();
+  }
 
   // render cameras
   if (show_cameras3d) {
@@ -662,6 +700,44 @@ void draw_scene() {
       }
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
+  }
+
+  // render ground truth
+  if (show_groundtruth) {
+    glColor3ubv(color_groundtruth_left);
+    int64_t ts = timestamps.at(current_frame);
+    glPointSize(3.0);
+    glBegin(GL_POINTS);
+    for (auto it = groundtruths.begin();
+         it <= groundtruths.begin() + current_frame; it++) {
+      Eigen::Vector3d path_point = std::get<0>((*it)).translation();
+      pangolin::glVertex(path_point);
+      int64_t ts_gt = std::get<2>((*it));
+      if (ts_gt >= ts) {
+        glEnd();
+        Eigen::Matrix4d left = std::get<0>((*it)).matrix();
+        Eigen::Vector4d pos = left.col(3);
+        Eigen::Matrix4d right = std::get<1>((*it)).matrix();
+        render_camera(left, 3.0f, color_groundtruth_left, 0.1f);
+        render_camera(right, 3.0f, color_groundtruth_right, 0.1f);
+        glColor3ubv(color_camera_current);
+        glLineWidth(1.0);
+        pangolin::GlFont::I()
+            .Text("Current translation error: %f ", trans_error)
+            .Draw(pos[0], pos[1] + 0.5, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Running translation error: %f ",
+                  running_trans_error / (current_frame + 1))
+            .Draw(pos[0], pos[1] + 1, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Absolute pose error: %f ", ape)
+            .Draw(pos[0], pos[1] + 1.5, pos[2]);
+        pangolin::GlFont::I()
+            .Text("Relative pose error: %f ", rpe)
+            .Draw(pos[0], pos[1] + 2, pos[2]);
+        break;
+      }
+    }
   }
 
   // render points
@@ -704,6 +780,76 @@ void draw_scene() {
     glEnd();
   }
 }
+void load_groundtruth(const std::string& dataset_path) {
+  // Load transformation from cameras to baseframe
+  const std::string caml_path = dataset_path + "/cam0/sensor.yaml";
+  const std::string camr_path = dataset_path + "/cam1/sensor.yaml";
+  YAML::Node caml_conf = YAML::LoadFile(caml_path);
+  YAML::Node camr_conf = YAML::LoadFile(camr_path);
+
+  Eigen::Matrix4d mat_cl(
+      caml_conf["T_BS"]["data"].as<std::vector<double>>().data());
+  Sophus::SE3d T_i_cl(mat_cl.transpose());
+  Eigen::Matrix4d mat_cr(
+      camr_conf["T_BS"]["data"].as<std::vector<double>>().data());
+  Sophus::SE3d T_i_cr(mat_cr.transpose());
+
+  // Load IMU to world transformations
+  const std::string groundtruth_path =
+      dataset_path + "/state_groundtruth_estimate0/data.csv";
+  std::ifstream times(groundtruth_path);
+  uint id = 0;
+  Eigen::Vector3d trans;
+  Sophus::SE3d T_w_wref;
+  Sophus::SE3d T_cl_cr;
+  while (times) {
+    std::string line;
+    std::getline(times, line);
+    // ignore first and last line
+    if (line[0] == '#' || id >= timestamps.size()) continue;
+    std::stringstream ls(line);
+    std::string cell;
+    std::map<std::string, double> cells;
+    std::vector<std::string> elems = {"x", "y", "z", "qw", "qx", "qy", "qz"};
+    std::string name;
+    double value;
+    int64_t ts;
+    int j = 0;
+    while (std::getline(ls, cell, ',')) {
+      if ((uint)j > elems.size()) break;  // only want elements 1-8
+      if (j == 0) {
+        ts = std::strtoll(cell.c_str(), NULL, 10);
+      } else {
+        name = elems.at(j - 1);
+        value = std::stod(cell);
+        cells.insert(std::make_pair(name, value));
+      }
+      j++;
+    }
+    // time stamp from GT is older than time stamp from frames, go to next GT ts
+    if (std::find(timestamps.begin(), timestamps.end(), ts) ==
+        timestamps.end()) {
+      continue;
+    }
+
+    trans << cells["x"], cells["y"], cells["z"];
+    Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
+
+    Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
+
+    Sophus::SE3d T_wref_imu(rot, trans);
+    if (groundtruths.size() == 0) {
+      T_cl_cr = T_i_cl.inverse() * T_i_cr;
+      T_w_wref = T_i_cl.inverse() * T_wref_imu.inverse();
+    }
+    Sophus::SE3d T_w_cl = T_w_wref * T_wref_imu * T_i_cl;
+    Sophus::SE3d T_w_cr = T_w_cl * T_cl_cr;
+    groundtruths.push_back(std::make_tuple(T_w_cl, T_w_cr, ts));
+
+    id++;
+  }
+  std::cout << "Loaded " << id << " groundtruth values" << std::endl;
+}
 
 // Load images, calibration, and features / matches if available
 void load_data(const std::string& dataset_path, const std::string& calib_path) {
@@ -720,8 +866,9 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
       std::string line;
       std::getline(times, line);
 
-      if (line.size() < 20 || line[0] == '#' || id > 2700) continue;
+      if (line.size() < 20 || line[0] == '#') continue;
 
+      timestamp = std::strtoll(line.substr(0, 19).c_str(), NULL, 10);
       std::string img_name = line.substr(20, line.size() - 21);
 
       // ensure that we actually read a new timestamp (and not e.g. just newline
@@ -738,7 +885,6 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
       }
 
       timestamps.push_back(timestamp);
-
       for (int i = 0; i < NUM_CAMS; i++) {
         TimeCamId tcid(id, i);
 
@@ -758,6 +904,8 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 
     std::cerr << "Loaded " << id << " images " << std::endl;
   }
+
+  load_groundtruth(dataset_path);
 
   {
     std::ifstream os(calib_path, std::ios::binary);
@@ -784,36 +932,77 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 /// Here the algorithmically interesting implementation begins
 ///////////////////////////////////////////////////////////////////////////////
 
-// Execute next step in the overall odometry pipeline. Call this repeatedly
-// until it returns false for automatic execution.
 bool next_step() {
   if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
+  /* TRACKING */
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+  prev_pose = current_pose;
+
+  TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
+
+  std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
+      projected_points;
+  std::vector<TrackId> projected_track_ids;
+
+  project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
+                    cam_z_threshold, projected_points, projected_track_ids);
+
+  std::cout << "Projected " << projected_track_ids.size() << " points."
+            << std::endl;
+
+  KeypointsData kdl;
+
+  pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
+
+  detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
+                                rotate_features);
+  feature_corners[tcidl] = kdl;
+
+  MatchData md;
+  find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
+                         projected_track_ids, match_max_dist_2d,
+                         feature_match_max_dist, feature_match_test_next_best,
+                         md);
+
+  std::cout << "Found " << md.matches.size() << " matches." << std::endl;
+
+  Sophus::SE3d T_w_c;
+  std::vector<int> inliers;
+
+  localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
+                  reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
+                  inliers);
+  current_pose = T_w_c;
+  // Do we update the current_pose?
+  // Or do we only do this when take_keyframe = true?
+
+  /*MAPPING*/
+  // if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
+  //    !opt_finished) {
+  //  take_keyframe = true;
+  //}
+  if (!opt_running && opt_finished) {
+    opt_thread->join();
+    landmarks = landmarks_opt;
+    cameras = cameras_opt;
+    calib_cam = calib_cam_opt;
+
+    opt_finished = false;
+  }
+  bool mapping_busy = opt_running || opt_finished;
+  make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
+                         frames_since_last_kf, new_kf_min_inliers, min_kfs,
+                         max_kref_overlap, mapping_busy, md, kf_frames);
 
   if (take_keyframe) {
-    take_keyframe = false;
-
-    TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
-
-    std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
-        projected_points;
-    std::vector<TrackId> projected_track_ids;
-
-    project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
-                      cam_z_threshold, projected_points, projected_track_ids);
-
-    std::cout << "KF Projected " << projected_track_ids.size() << " points."
-              << std::endl;
-
+    // take_keyframe = false;
+    std::cout << "Adding as keyframe..." << std::endl;
     MatchData md_stereo;
-    KeypointsData kdl, kdr;
+    KeypointsData kdr;
 
-    pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
 
-    detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
-                                  rotate_features);
     detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
 
@@ -832,107 +1021,47 @@ bool next_step() {
     std::cout << "KF Found " << md_stereo.inliers.size() << " stereo-matches."
               << std::endl;
 
-    feature_corners[tcidl] = kdl;
     feature_corners[tcidr] = kdr;
     feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
-
-    MatchData md;
-
-    find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
-                           projected_track_ids, match_max_dist_2d,
-                           feature_match_max_dist, feature_match_test_next_best,
-                           md);
-
-    std::cout << "KF Found " << md.matches.size() << " matches." << std::endl;
-
-    Sophus::SE3d T_w_c;
-    std::vector<int> inliers;
-    localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
-                    reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
-                    inliers);
-
-    current_pose = T_w_c;
 
     cameras[tcidl].T_w_c = current_pose;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
+    std::vector<TrackId> kf_lms;
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
-                      md_stereo, md, landmarks, next_landmark_id);
+                      md_stereo, md, landmarks, kf_lms, next_landmark_id);
 
-    remove_old_keyframes(tcidl, max_num_kfs, cameras, landmarks, old_landmarks,
-                         kf_frames);
+    add_new_keyframe(tcidl.first, kf_lms, kf_frames);
+
+    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames, min_kfs,
+                         max_redundant_obs_count);
+
+    compute_covisibility(kf_frames, min_weight, cov_graph);
+    std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
     current_pose = cameras[tcidl].T_w_c;
-
-    // update image views
-    change_display_to_image(tcidl);
-    change_display_to_image(tcidr);
-
-    compute_projections();
-
-    current_frame++;
-    return true;
-  } else {
-    TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
-
-    std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
-        projected_points;
-    std::vector<TrackId> projected_track_ids;
-
-    project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
-                      cam_z_threshold, projected_points, projected_track_ids);
-
-    std::cout << "Projected " << projected_track_ids.size() << " points."
-              << std::endl;
-
-    KeypointsData kdl;
-
-    pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
-
-    detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
-                                  rotate_features);
-
-    feature_corners[tcidl] = kdl;
-
-    MatchData md;
-    find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
-                           projected_track_ids, match_max_dist_2d,
-                           feature_match_max_dist, feature_match_test_next_best,
-                           md);
-
-    std::cout << "Found " << md.matches.size() << " matches." << std::endl;
-
-    Sophus::SE3d T_w_c;
-    std::vector<int> inliers;
-
-    localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
-                    reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
-                    inliers);
-
-    current_pose = T_w_c;
-
-    if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
-        !opt_finished) {
-      take_keyframe = true;
-    }
-
-    if (!opt_running && opt_finished) {
-      opt_thread->join();
-      landmarks = landmarks_opt;
-      cameras = cameras_opt;
-      calib_cam = calib_cam_opt;
-
-      opt_finished = false;
-    }
-
-    // update image views
-    change_display_to_image(tcidl);
-    change_display_to_image(tcidr);
-
-    current_frame++;
-    return true;
   }
+
+  // update image views
+  change_display_to_image(tcidl);
+  change_display_to_image(tcidr);
+  trans_error = calculate_translation_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  running_trans_error += trans_error;
+  ape = calculate_absolute_pose_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  if (current_frame > 1) {
+    rpe = calculate_relative_pose_error(
+        std::get<0>(groundtruths.at(current_frame)),
+        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
+        prev_pose);
+  } else {
+    rpe = 0;
+  }
+  estimated_path.push_back(current_pose.translation());
+  current_frame++;
+  return true;
 }
 
 // Compute reprojections for all landmark observations for visualization and
@@ -992,14 +1121,14 @@ void optimize() {
     num_obs += kv.second.obs.size();
   }
 
-  std::cerr << "Optimizing map with " << cameras.size() << ", "
+  std::cerr << "Optimizing map with " << cameras.size() << " cameras, "
             << landmarks.size() << " points and " << num_obs << " observations."
             << std::endl;
 
   // Fix oldest two cameras to fix SE3 and scale gauge. Making the whole second
   // camera constant is a bit suboptimal, since we only need 1 DoF, but it's
   // simple and the initial poses should be good from calibration.
-  FrameId fid = *(kf_frames.begin());
+  FrameId fid = kf_frames.begin()->first;
   // std::cout << "fid " << fid << std::endl;
 
   // Prepare bundle adjustment
