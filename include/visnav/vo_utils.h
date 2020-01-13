@@ -217,7 +217,8 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
                        const Sophus::SE3d& T_w_c0, const Calibration& calib_cam,
                        const std::vector<int> inliers,
                        const MatchData& md_stereo, const MatchData& md,
-                       Landmarks& landmarks, TrackId& next_landmark_id) {
+                       Landmarks& landmarks, std::vector<TrackId> kf_lms,
+                       TrackId& next_landmark_id) {
   auto cam0 = calib_cam.intrinsics.at(tcidl.second).get();
   auto cam1 = calib_cam.intrinsics.at(tcidr.second).get();
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
@@ -231,6 +232,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
   for (auto& match : md.matches) {
     FeatureId featureid0 = match.first;
     TrackId trackid = match.second;
+    kf_lms.push_back(trackid);
 
     if (std::find(inliers.begin(), inliers.end(), inlier_index) !=
         inliers.end()) {
@@ -272,28 +274,11 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
     new_landmark.obs.insert(std::make_pair(tcidl, stereo_match.first));
     new_landmark.obs.insert(std::make_pair(tcidr, stereo_match.second));
     landmarks.insert(std::make_pair(next_landmark_id, new_landmark));
-    next_landmark_id++;
+    kf_lms.push_back(++next_landmark_id);
   }
 }
 
-void get_landmarks_of_kf(const FrameId kf, Landmarks& landmarks,
-                         std::set<TrackId>& selected_landmarks) {
-  // search through all landmarks for the ones observed in this kf and put into
-  // selected_landmarks
-  TimeCamId tcidl = std::make_pair(kf, 0);
-  TimeCamId tcidr = std::make_pair(kf, 1);
-  for (auto it = landmarks.cbegin(); it != landmarks.cend(); it++) {
-    // Problems: adding the same landmark twice if observed by left and right
-    // cameras? Solution: using a "set" as data structure for selected_landmarks
-    if (it->second.obs.find(tcidl) != it->second.obs.end() ||
-        it->second.obs.find(tcidr) != it->second.obs.end()) {
-      selected_landmarks.insert(it->first);
-    }
-  }
-}
-
-void remove_kf(std::set<FrameId>& kf_frames, FrameId current_kf,
-               Cameras& cameras, Landmarks& old_landmarks,
+void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& old_landmarks,
                Landmarks& landmarks) {
   // remove keyframe from keyframes
 
@@ -325,15 +310,37 @@ void remove_kf(std::set<FrameId>& kf_frames, FrameId current_kf,
   }
 }
 
+void compute_covisibility(const Keyframes& kf_frames, const int& min_weight,
+                          CovisibilityGraph& cov_graph) {
+  cov_graph.clear();
+  for (auto& kf : kf_frames) {
+    std::vector<TrackId> lm = kf.second;
+    std::vector<std::tuple<FrameId, int>> weights;
+    for (auto& other_kf : kf_frames) {
+      if (kf.first == other_kf.first) continue;
+      std::vector<TrackId> other_lm = other_kf.second;
+      int weight = 0;
+      for (const TrackId& tid : lm) {
+        for (const TrackId& other_tid : other_lm) {
+          if (tid == other_tid) weight++;
+        }
+      }
+      if (weight >= min_weight) {
+        weights.push_back(std::make_tuple(other_kf.first, weight));
+      }
+    }
+    cov_graph.insert(std::make_pair(kf.first, weights));
+  }
+}
+
 void make_keyframe_decision(bool& take_keyframe,
                             const int& max_frames_since_last_kf,
                             const int& frames_since_last_kf,
                             const int& new_kf_min_inliers, const int& min_kfs,
                             const double& max_kref_overlap,
                             const bool& mapping_busy, const MatchData& md,
-                            const std::set<FrameId>& kf_frames,
-                            const Landmarks& landmarks) {
-  if (kf_frames.size() < min_kfs) {
+                            const Keyframes& kf_frames) {
+  if (kf_frames.size() < (uint)min_kfs) {
     take_keyframe = !mapping_busy;
     return;
   }
@@ -341,13 +348,11 @@ void make_keyframe_decision(bool& take_keyframe,
   int max_count = 0;
   for (auto& kf : kf_frames) {
     int count = 0;
-    TimeCamId tcidl = std::make_pair(kf, 0);
-    TimeCamId tcidr = std::make_pair(kf, 1);
+    std::vector<TrackId> lms = kf.second;
     for (auto& match : md.matches) {
       TrackId trackId = match.second;
-      Landmark landmark = landmarks.at(trackId);
-      bool kf_sees_landmark = landmark.obs.find(tcidl) != landmark.obs.end() ||
-                              landmark.obs.find(tcidr) != landmark.obs.end();
+      bool kf_sees_landmark =
+          std::find(lms.begin(), lms.end(), trackId) != lms.end();
       if (kf_sees_landmark) {
         count++;
       }
@@ -355,38 +360,63 @@ void make_keyframe_decision(bool& take_keyframe,
     if (count > max_count) {
       max_count = count;
     }
-
-    // TODO: change AND to OR and ensure mapping/optimization is interrupted if
-    // frames_since_last_kf > 20
-    bool cond1 = !mapping_busy;
-    //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
-    bool cond2 = md.matches.size() > (uint)new_kf_min_inliers;
-    bool cond3 =
-        (double)max_count / (double)md.matches.size() <= max_kref_overlap;
-    std::cout << max_count << std::endl;
-    std::cout << md.matches.size() << std::endl;
-    std::cout << "Condition 1 fulfilled: " << cond1 << std::endl;
-    std::cout << "Condition 2 fulfilled: " << cond2 << std::endl;
-    std::cout << "Condition 3 fulfilled: " << cond3 << std::endl;
-    take_keyframe = cond1 && cond2 && cond3;
   }
+
+  // TODO: change AND to OR and ensure mapping/optimization is interrupted
+  // if frames_since_last_kf > 20
+  bool cond1 = !mapping_busy;
+  //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
+  bool cond2 = md.matches.size() > (uint)new_kf_min_inliers;
+  bool cond3 =
+      (double)max_count / (double)md.matches.size() <= max_kref_overlap;
+  std::cout << max_count << std::endl;
+  std::cout << md.matches.size() << std::endl;
+  std::cout << "Condition 1 fulfilled: " << cond1 << std::endl;
+  std::cout << "Condition 2 fulfilled: " << cond2 << std::endl;
+  std::cout << "Condition 3 fulfilled: " << cond3 << std::endl;
+  take_keyframe = cond1 && cond2 && cond3;
 }
 
-void add_new_keyframe(const TimeCamId& tcidl, std::set<FrameId>& kf_frames) {
-  kf_frames.emplace(tcidl.first);
+void add_new_keyframe(const FrameId& new_kf,
+                      const std::vector<TrackId>& kf_landmarks,
+                      Keyframes& kf_frames) {
+  kf_frames.insert(std::make_pair(new_kf, kf_landmarks));
 }
+
+// void add_to_cov_graph(const FrameId& new_kf, const Keyframes&
+// kf_frames,
+//                       CovisibilityGraph& cov_graph) {
+//   std::vector<std::tuple<FrameId, int>> new_weights;
+//   for (auto& node : cov_graph) {
+//     FrameId kf = node.first;
+//     auto weights = node.second;
+//     int curr_weight = 0;
+//     for (TrackId& trackid : kf_frames.at(kf)) {
+//       if (kf != new_kf) {
+//         std::vector<TrackId> new_lms = kf_frames.at(new_kf);
+//         if (std::find(new_lms.begin(), new_lms.end(), trackid) !=
+//             new_lms.end()) {
+//           curr_weight++;
+//         }
+//       }
+//     }
+//     if (curr_weight >= min_cov_weight) {
+//       new_weights.push_back(std::make_tuple(kf, curr_weight));
+//     }
+//   }
+//   cov_graph.insert(std::make_pair(new_kf, new_weights));
+// }
 
 void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
-                          Landmarks& old_landmarks,
-                          std::set<FrameId>& kf_frames, const int& min_kfs,
+                          Landmarks& old_landmarks, Keyframes& kf_frames,
+                          const int& min_kfs,
                           const double& max_redundant_obs_count) {
-  if (kf_frames.size() < min_kfs) return;
+  if (kf_frames.size() < (uint)min_kfs) return;
   for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
-    std::set<TrackId> selected_landmarks;
-    get_landmarks_of_kf(*current_kf, landmarks, selected_landmarks);
+    std::vector<TrackId> current_landmarks = (*current_kf).second;
     int overlap_count = 0;
-    for (auto current_landmark = selected_landmarks.cbegin();
-         current_landmark != selected_landmarks.cend(); current_landmark++) {
+    for (auto current_landmark = current_landmarks.cbegin();
+         current_landmark != current_landmarks.cend(); current_landmark++) {
       // if at least three other kf observe this landmark, increment the
       // overlap_count
       std::set<FrameId> unique_frameIds;
@@ -399,62 +429,14 @@ void remove_old_keyframes(Cameras& cameras, Landmarks& landmarks,
         overlap_count++;
       }
     }
-    std::cout << "Overlap count: " << overlap_count << std::endl;
-    std::cout << "Selected landmarks size: " << selected_landmarks.size()
-              << std::endl;
     double overlap_percentage =
-        (double)overlap_count / (double)selected_landmarks.size();
-    std::cout << "Overlap percentage: " << overlap_percentage << std::endl;
-    std::cout << max_redundant_obs_count << std::endl;
+        (double)overlap_count / (double)current_landmarks.size();
     if (overlap_percentage >= max_redundant_obs_count) {
-      std::cout << "Removing keyframe" << std::endl;
-      remove_kf(kf_frames, *current_kf, cameras, old_landmarks, landmarks);
+      remove_kf((*current_kf).first, cameras, old_landmarks, landmarks);
       current_kf = kf_frames.erase(current_kf);
     } else {
       current_kf++;
     }
   }
 }
-
-void remove_old_keyframes_old(const TimeCamId tcidl, const int max_num_kfs,
-                              Cameras& cameras, Landmarks& landmarks,
-                              Landmarks& old_landmarks,
-                              std::set<FrameId>& kf_frames) {
-  // kf_frames.emplace(tcidl.first);
-
-  // TODO SHEET 5: Remove old cameras and observations if the number of
-  // keyframe pairs (left and right image is a pair) is larger than
-  // max_num_kfs. The ids of all the keyframes that are currently in the
-  // optimization should be stored in kf_frames. Removed keyframes should be
-  // removed from cameras and landmarks with no left observations should be
-  // moved to old_landmarks.
-  while ((int)kf_frames.size() > max_num_kfs) {
-    FrameId frameid = *kf_frames.begin();
-    TimeCamId tcid0 = std::make_pair(frameid, 0);
-    TimeCamId tcid1 = std::make_pair(frameid, 1);
-    kf_frames.erase(frameid);
-    cameras.erase(tcid0);
-    cameras.erase(tcid1);
-    for (auto it = landmarks.cbegin(); it != landmarks.cend();) {
-      // remove associated observations
-      for (auto obs_it = it->second.obs.cbegin();
-           obs_it != it->second.obs.cend();) {
-        auto obs = *obs_it;
-        if (obs.first == tcid0 or obs.first == tcid1) {
-          obs_it = landmarks.at(it->first).obs.erase(obs_it);
-        } else {
-          ++obs_it;
-        }
-      }
-      // move landmarks with no more observations to old_landmarks
-      if (it->second.obs.size() == 0) {
-        old_landmarks.insert(*it);
-        it = landmarks.erase(it);
-      } else {
-        ++it;
-      }
-    }
-  }
-}
-
 }  // namespace visnav
