@@ -8,6 +8,7 @@ set(EIGEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/eigen")
 set(CERES_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-ceres-solver")
 set(PANGOLIN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-Pangolin/src")
 set(OPENGV_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-opengv")
+set(YAMLCPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-yaml-cpp/")
 
 # Set default build type if not specified otherwise.
 # See https://cmake.org/pipermail/cmake/2012-May/050243.html
@@ -58,11 +59,15 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")                                     
 SET(CMAKE_CXX_FLAGS " -ftemplate-backtrace-limit=0 -Wall -Wextra ${EXTRA_WARNING_FLAGS} -march=${CXX_MARCH} ${CMAKE_CXX_FLAGS}")
 
 
+find_package(yaml-cpp 0.6.0 REQUIRED)
+message(STATUS "Found yaml-cpp")
+
 set(EIGEN_INCLUDE_DIR_HINTS ${EIGEN_ROOT})
 find_package(Eigen3 3.3.7 EXACT REQUIRED MODULE)
 set(EIGEN_INCLUDE_DIR ${EIGEN3_INCLUDE_DIR})  # for ceres / opengv
 include_directories(${EIGEN3_INCLUDE_DIR})
 message(STATUS "Found Eigen headers in: ${EIGEN3_INCLUDE_DIR}")
+
 
 include_directories(thirdparty/Sophus)
 include_directories(thirdparty/cereal/include)
@@ -108,6 +113,9 @@ target_link_libraries(sfm ceres ${Pangolin_LIBRARIES} ${TBB_LIBRARIES} ${OpenCV_
 
 add_executable(odometry src/odometry.cpp)
 target_link_libraries(odometry ceres ${Pangolin_LIBRARIES} ${TBB_LIBRARIES} ${OpenCV_LIBS} opengv)
+
+add_executable(orb_slam src/orb_slam.cpp)
+target_link_libraries(orb_slam ceres ${Pangolin_LIBRARIES} ${TBB_LIBRARIES} ${OpenCV_LIBS} opengv yaml-cpp)
 
 
 
