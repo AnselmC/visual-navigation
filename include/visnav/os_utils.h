@@ -1,35 +1,3 @@
-/**
-BSD 3-Clause License
-
-Copyright (c) 2018, Vladyslav Usenko and Nikolaus Demmel.
-All rights reserved.
-
-Redistribution and use in source and binary forms, with or without
-modification, are permitted provided that the following conditions are met:
-
-* Redistributions of source code must retain the above copyright notice, this
-  list of conditions and the following disclaimer.
-
-* Redistributions in binary form must reproduce the above copyright notice,
-  this list of conditions and the following disclaimer in the documentation
-  and/or other materials provided with the distribution.
-
-* Neither the name of the copyright holder nor the names of its
-  contributors may be used to endorse or promote products derived from
-  this software without specific prior written permission.
-
-THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-*/
-
 #pragma once
 
 #include <algorithm>
@@ -47,6 +15,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <opengv/triangulation/methods.hpp>
 
 namespace visnav {
+
+void get_landmark_subset(const Landmarks& landmarks,
+                         const std::vector<TrackId> landmark_ids,
+                         Landmarks& landmarks_subset) {
+  for (auto& landmark : landmarks) {
+    if (std::find(landmark_ids.begin(), landmark_ids.end(), landmark.first) ==
+        landmark_ids.end())
+      continue;
+    landmarks_subset.insert(landmark);
+  }
+}
 
 void project_landmarks(
     const Sophus::SE3d& current_pose,
@@ -211,13 +190,33 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
   T_w_c = Sophus::SE3d(transformation.block<3, 3>(0, 0), transformation.col(3));
   inliers = ransac.inliers_;
 }
+int get_kref(const Keyframes& kf_frames, const MatchData& md, FrameId& kref) {
+  int max_count = 0;
+  for (auto& kf : kf_frames) {
+    int count = 0;
+    std::vector<TrackId> lms = kf.second;
+    for (auto& match : md.matches) {
+      TrackId trackId = match.second;
+      bool kf_sees_landmark =
+          std::find(lms.begin(), lms.end(), trackId) != lms.end();
+      if (kf_sees_landmark) {
+        count++;
+      }
+    }
+    if (count > max_count) {
+      max_count = count;
+      kref = kf.first;
+    }
+  }
+  return max_count;
+}
 
 void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
                        const KeypointsData& kdl, const KeypointsData& kdr,
                        const Sophus::SE3d& T_w_c0, const Calibration& calib_cam,
                        const std::vector<int> inliers,
                        const MatchData& md_stereo, const MatchData& md,
-                       Landmarks& landmarks, std::vector<TrackId> kf_lms,
+                       Landmarks& landmarks, std::vector<TrackId>& kf_lms,
                        TrackId& next_landmark_id) {
   auto cam0 = calib_cam.intrinsics.at(tcidl.second).get();
   auto cam1 = calib_cam.intrinsics.at(tcidr.second).get();
@@ -309,7 +308,6 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& old_landmarks,
     }
   }
 }
-
 void compute_covisibility(const Keyframes& kf_frames, const int& min_weight,
                           CovisibilityGraph& cov_graph) {
   cov_graph.clear();
@@ -332,6 +330,27 @@ void compute_covisibility(const Keyframes& kf_frames, const int& min_weight,
     cov_graph.insert(std::make_pair(kf.first, weights));
   }
 }
+void get_local_map(const MatchData& md_prev, const Landmarks& landmarks,
+                   const Keyframes& kf_frames, const int min_weight,
+                   Landmarks& local_landmarks) {
+  FrameId kref;
+  get_kref(kf_frames, md_prev, kref);
+  CovisibilityGraph cov_graph;
+  compute_covisibility(kf_frames, min_weight, cov_graph);
+  auto neighbors = cov_graph.at(kref);
+  std::vector<FrameId> local_lm_ids;
+  for (auto& neighbor : neighbors) {
+    TrackId tid = std::get<0>(neighbor);
+    std::vector<TrackId> lms = kf_frames.at(tid);
+    for (auto& lmid : lms) {
+      if (std::find(local_lm_ids.begin(), local_lm_ids.end(), lmid) ==
+          local_lm_ids.end()) {
+        local_lm_ids.push_back(lmid);
+      }
+    }
+  }
+  get_landmark_subset(landmarks, local_lm_ids, local_landmarks);
+}
 
 void make_keyframe_decision(bool& take_keyframe,
                             const int& max_frames_since_last_kf,
@@ -345,22 +364,8 @@ void make_keyframe_decision(bool& take_keyframe,
     return;
   }
 
-  int max_count = 0;
-  for (auto& kf : kf_frames) {
-    int count = 0;
-    std::vector<TrackId> lms = kf.second;
-    for (auto& match : md.matches) {
-      TrackId trackId = match.second;
-      bool kf_sees_landmark =
-          std::find(lms.begin(), lms.end(), trackId) != lms.end();
-      if (kf_sees_landmark) {
-        count++;
-      }
-    }
-    if (count > max_count) {
-      max_count = count;
-    }
-  }
+  FrameId kref;
+  int max_count = get_kref(kf_frames, md, kref);
 
   // TODO: change AND to OR and ensure mapping/optimization is interrupted
   // if frames_since_last_kf > 20
@@ -382,6 +387,7 @@ void add_new_keyframe(const FrameId& new_kf,
                       Keyframes& kf_frames) {
   kf_frames.insert(std::make_pair(new_kf, kf_landmarks));
 }
+
 double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
                                    const Sophus::SE3d& estimated_pose) {
   double trans_error =

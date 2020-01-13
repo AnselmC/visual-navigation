@@ -102,6 +102,7 @@ std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
 Keyframes kf_frames;
+std::vector<TrackId> kf_lms;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 double trans_error = 0;
@@ -939,17 +940,8 @@ bool next_step() {
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
   prev_pose = current_pose;
 
+  // Orb feature detection
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
-
-  std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
-      projected_points;
-  std::vector<TrackId> projected_track_ids;
-
-  project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
-                    cam_z_threshold, projected_points, projected_track_ids);
-
-  std::cout << "Projected " << projected_track_ids.size() << " points."
-            << std::endl;
 
   KeypointsData kdl;
 
@@ -959,29 +951,57 @@ bool next_step() {
                                 rotate_features);
   feature_corners[tcidl] = kdl;
 
-  MatchData md;
-  find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,
+  std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
+      projected_points;
+  std::vector<TrackId> projected_track_ids;
+  // project landmarks that previous frame saw -> kf_lms
+  /* ESTIMATE POSE BASED ON PREVIOUS FRAME */
+  Landmarks prev_landmarks;
+  get_landmark_subset(landmarks, kf_lms, prev_landmarks);
+
+  project_landmarks(current_pose, calib_cam.intrinsics[0], prev_landmarks,
+                    cam_z_threshold, projected_points, projected_track_ids);
+
+  std::cout << "Projected " << projected_track_ids.size() << " points."
+            << std::endl;
+
+  MatchData md_prev;
+  find_matches_landmarks(kdl, prev_landmarks, feature_corners, projected_points,
                          projected_track_ids, match_max_dist_2d,
                          feature_match_max_dist, feature_match_test_next_best,
-                         md);
+                         md_prev);
 
-  std::cout << "Found " << md.matches.size() << " matches." << std::endl;
+  std::cout << "Found " << md_prev.matches.size() << " matches." << std::endl;
 
   Sophus::SE3d T_w_c;
   std::vector<int> inliers;
 
-  localize_camera(calib_cam.intrinsics[0], kdl, landmarks,
-                  reprojection_error_pnp_inlier_threshold_pixel, md, T_w_c,
+  localize_camera(calib_cam.intrinsics[0], kdl, prev_landmarks,
+                  reprojection_error_pnp_inlier_threshold_pixel, md_prev, T_w_c,
                   inliers);
   current_pose = T_w_c;
-  // Do we update the current_pose?
-  // Or do we only do this when take_keyframe = true?
 
-  /*MAPPING*/
-  // if (int(inliers.size()) < new_kf_min_inliers && !opt_running &&
-  //    !opt_finished) {
-  //  take_keyframe = true;
-  //}
+  /* PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP */
+  Landmarks local_landmarks;
+  get_local_map(md_prev, landmarks, kf_frames, min_weight, local_landmarks);
+
+  project_landmarks(current_pose, calib_cam.intrinsics[0], local_landmarks,
+                    cam_z_threshold, projected_points, projected_track_ids);
+
+  std::cout << "Projected " << projected_track_ids.size() << " points."
+            << std::endl;
+
+  MatchData md_local;
+  find_matches_landmarks(kdl, local_landmarks, feature_corners,
+                         projected_points, projected_track_ids,
+                         match_max_dist_2d, feature_match_max_dist,
+                         feature_match_test_next_best, md_local);
+  localize_camera(calib_cam.intrinsics[0], kdl, local_landmarks,
+                  reprojection_error_pnp_inlier_threshold_pixel, md_local,
+                  T_w_c, inliers);
+  current_pose = T_w_c;
+  std::cout << "Found " << md_local.matches.size() << " matches." << std::endl;
+
   if (!opt_running && opt_finished) {
     opt_thread->join();
     landmarks = landmarks_opt;
@@ -993,10 +1013,10 @@ bool next_step() {
   bool mapping_busy = opt_running || opt_finished;
   make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
                          frames_since_last_kf, new_kf_min_inliers, min_kfs,
-                         max_kref_overlap, mapping_busy, md, kf_frames);
+                         max_kref_overlap, mapping_busy, md_local, kf_frames);
 
+  /*MAPPING*/
   if (take_keyframe) {
-    // take_keyframe = false;
     std::cout << "Adding as keyframe..." << std::endl;
     MatchData md_stereo;
     KeypointsData kdr;
@@ -1027,16 +1047,15 @@ bool next_step() {
     cameras[tcidl].T_w_c = current_pose;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
-    std::vector<TrackId> kf_lms;
     add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
-                      md_stereo, md, landmarks, kf_lms, next_landmark_id);
+                      md_stereo, md_local, landmarks, kf_lms, next_landmark_id);
 
     add_new_keyframe(tcidl.first, kf_lms, kf_frames);
 
     remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames, min_kfs,
                          max_redundant_obs_count);
 
-    compute_covisibility(kf_frames, min_weight, cov_graph);
+    // compute_covisibility(kf_frames, min_weight, cov_graph);
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
     optimize();
 
