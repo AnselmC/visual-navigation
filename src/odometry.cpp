@@ -34,6 +34,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <fstream>
 #include <thread>
 
 #include <yaml-cpp/yaml.h>
@@ -103,6 +104,8 @@ std::atomic<bool> opt_finished{false};
 std::set<FrameId> kf_frames;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
+std::vector<Sophus::SE3d> visualodometrys;
+
 double trans_error = 0;
 double running_trans_error = 0;
 double ape = 0;
@@ -147,6 +150,9 @@ Landmarks old_landmarks;
 /// determining outliers; indexed by images
 ImageProjections image_projections;
 
+//csv file for recording pose of camera in Visual Odometry
+std::ofstream vo_csv;
+
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI parameters
 ///////////////////////////////////////////////////////////////////////////////
@@ -176,6 +182,8 @@ pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
 pangolin::Var<bool> show_path("hidden.show_path", true, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
+pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true, false,
+                                     true);
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
@@ -236,6 +244,9 @@ Button next_step_btn("ui.next_step", &next_step);
 // Parse parameters, load data, and create GUI window and event loop (or
 // process everything in non-gui mode).
 int main(int argc, char** argv) {
+  vo_csv.open("visual_odometry_poses.csv");
+  vo_csv << "#timestamp,x,y,z,w,qx,qy,qz\n";
+  std::cout << "csv file opened" << std::endl;
   bool show_gui = true;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string cam_calib = "opt_calib.json";
@@ -385,6 +396,8 @@ int main(int argc, char** argv) {
       // nop
     }
   }
+  vo_csv.close();
+  std::cout << "csv file closed" << std::endl;
 
   return 0;
 }
@@ -648,6 +661,8 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};     // brown
+  const u_int8_t color_visualodometry_right[3]{181, 101, 29};    // light brown
   const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
   const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
   const u_int8_t color_camera_current[3]{255, 0, 0};         // red
@@ -688,6 +703,46 @@ void draw_scene() {
       }
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
+  }
+
+  // render visual odometry
+  if (show_visualodometry) {
+    glColor3ubv(color_visualodometry_left);
+    // int64_t ts = timestamps.at(current_frame);
+    glPointSize(3.0);
+    glBegin(GL_POINTS);
+    for (auto it = visualodometrys.begin();
+         it <= visualodometrys.begin() + current_frame && it != visualodometrys.end(); it++) {
+      Eigen::Vector3d path_point = (*it).translation();
+      pangolin::glVertex(path_point);
+      // int64_t ts_gt = std::get<2>((*it));
+      if (it == visualodometrys.begin() + current_frame) {
+        glEnd();
+        Eigen::Matrix4d left = (*it).matrix();
+        // Eigen::Vector4d pos = left.col(3);
+
+        Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+        Eigen::Matrix4d right = (T_0_1.inverse() * (*it)).matrix();
+        render_camera(left, 3.0f, color_visualodometry_left, 0.1f);
+        render_camera(right, 3.0f, color_visualodometry_right, 0.1f);
+        glColor3ubv(color_camera_current);
+        glLineWidth(1.0);
+        // pangolin::GlFont::I()
+        //     .Text("Current translation error: %f ", trans_error)
+        //     .Draw(pos[0], pos[1] + 0.5, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Running translation error: %f ",
+        //           running_trans_error / (current_frame + 1))
+        //     .Draw(pos[0], pos[1] + 1, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Absolute pose error: %f ", ape)
+        //     .Draw(pos[0], pos[1] + 1.5, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Relative pose error: %f ", rpe)
+        //     .Draw(pos[0], pos[1] + 2, pos[2]);
+        break;
+      }
+    }
   }
 
   // render ground truth
@@ -768,6 +823,61 @@ void draw_scene() {
     glEnd();
   }
 }
+void load_visualodometry(const std::string& dataset_path) {  
+
+  // Load IMU to world transformations
+  const std::string visualodometry_path =
+      dataset_path + "/vo/vo_poses.csv";
+  std::ifstream times(visualodometry_path);
+  int cnt = 0;
+  Eigen::Vector3d trans;
+  Sophus::SE3d T_w_wref;
+  while (times) {
+    std::string line;
+    std::getline(times, line);
+    // ignore first line
+    if (line[0] == '#') continue;
+    std::stringstream ls(line);
+    std::string cell;
+    std::map<std::string, double> cells;
+    std::vector<std::string> elems = {"x", "y", "z", "qw", "qx", "qy", "qz"};
+    std::string name;
+    double value;
+    int j = 0;
+    while (std::getline(ls, cell, ',')) {
+      if ((uint)j > elems.size()) break;  // only want elements 1-8
+      if (j != 0) {
+        name = elems.at(j - 1);
+        value = std::stod(cell);
+        cells.insert(std::make_pair(name, value));
+      }
+      j++;
+    }
+    // for (auto it = cells.begin(); it != cells.end(); it++) {
+    //   std::cout << it -> second << ",";
+    // }
+    // std::cout << std::endl;
+    trans << cells["x"], cells["y"], cells["z"];
+    Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
+
+    Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
+    std::cout << "rotation: " << rot  << std::endl;
+    std::cout << "translation: " << trans  << std::endl;
+    Sophus::SE3d T_wref_imu(rot, trans);
+
+    visualodometrys.push_back(T_wref_imu);
+    cnt++;
+
+
+  }
+  std::cout << "Loaded " << cnt << " visual odometry path values" << std::endl;
+  for (auto& vo_step : visualodometrys) {
+    // std::cout << "rotation: " << vo_step.rotationMatrix()  << std::endl;
+    // std::cout << "translation: " << vo_step.translation()  << std::endl;
+
+  }
+}
+
 void load_groundtruth(const std::string& dataset_path) {
   // Load transformation from cameras to baseframe
   const std::string caml_path = dataset_path + "/cam0/sensor.yaml";
@@ -850,10 +960,6 @@ void load_groundtruth(const std::string& dataset_path) {
     id++;
   }
   std::cout << "Loaded " << id << " groundtruth values" << std::endl;
-  std::cout << "Ids used:" << std::endl;
-  for (auto& id_used : ids_used) {
-    std::cout << id_used << std::endl;
-  }
 }
 
 // Load images, calibration, and features / matches if available
@@ -910,6 +1016,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
     std::cerr << "Loaded " << id << " images " << std::endl;
   }
 
+  load_visualodometry(dataset_path);
   load_groundtruth(dataset_path);
 
   {
@@ -1082,6 +1189,19 @@ bool next_step() {
     change_display_to_image(tcidl);
     change_display_to_image(tcidr);
   }
+  //Translation: in the order of [x,y,z]
+  vo_csv << current_frame << "," << current_pose.translation()[0] << "," << current_pose.translation()[1] << "," << current_pose.translation()[2] << ",";
+
+  std::cout << "Translation: " << current_pose.translation()[0] << "," << current_pose.translation()[1] << "," << current_pose.translation()[2] << "\n";
+
+  //Quaternion: in the order of [w,x,y,z]
+  vo_csv << current_pose.unit_quaternion().coeffs()[3] << "," << current_pose.unit_quaternion().coeffs()[0] << "," << 
+  current_pose.unit_quaternion().coeffs()[1] << "," << current_pose.unit_quaternion().coeffs()[2]   << "\n";
+
+  std::cout << current_pose.rotationMatrix() << std::endl;
+
+  std::cout << "csv file edited" << std::endl;
+  
   trans_error = calculate_translation_error(
       current_pose, std::get<0>(groundtruths.at(current_frame)));
   running_trans_error += trans_error;
