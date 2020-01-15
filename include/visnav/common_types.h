@@ -123,6 +123,23 @@ using CovisibilityGraph =
 // each keyframe has an associated vector of landmark ids
 using Keyframes = std::map<FrameId, std::vector<TrackId>>;
 
+struct OrbSLAMOptions {
+  int num_features_per_image;
+  bool rotate_features;
+  int feature_match_max_dist;
+  double feature_match_test_next_best;
+  double match_max_dist_2d;
+  int min_kfs;
+  double max_redundant_obs_count;
+  int new_kf_min_inliers;
+  double max_kref_overlap;
+  int max_frames_since_last_kf;
+  int max_num_kfs;
+  int min_weight;
+  double cam_z_threshold;
+  double reprojection_error_pnp_inlier_threshold_pixel;
+};
+
 /// cameras in the map
 struct Camera {
   // camera pose (transforms from camera to world)

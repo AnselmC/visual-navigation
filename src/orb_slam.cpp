@@ -91,6 +91,8 @@ constexpr int NUM_CAMS = 2;
 /// Variables
 ///////////////////////////////////////////////////////////////////////////////
 
+// Profiling vars
+
 int current_frame = 0;
 Sophus::SE3d current_pose;
 Sophus::SE3d prev_pose;
@@ -102,7 +104,7 @@ std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
 Keyframes kf_frames;
-std::vector<TrackId> kf_lms;
+std::vector<TrackId> prev_lm_ids;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 double trans_error = 0;
@@ -125,6 +127,8 @@ tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 /// timestamps for all stereo pairs
 std::vector<FrameId> timestamps;
 
+std::vector<FrameId> cov_frames;
+std::vector<TrackId> local_lms;
 /// detected feature locations and descriptors
 Corners feature_corners;
 
@@ -189,7 +193,8 @@ pangolin::Var<bool> show_old_points3d("hidden.show_old_points3d", true, false,
 //////////////////////////////////////////////
 /// Feature extraction and matching options
 
-pangolin::Var<int> num_features_per_image("hidden.num_features", 1500, 10,
+OrbSLAMOptions os_opts;
+pangolin::Var<int> num_features_per_image("hidden.num_features", 2000, 10,
                                           5000);
 pangolin::Var<bool> rotate_features("hidden.rotate_features", true, false,
                                     true);
@@ -202,9 +207,9 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
 
 pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
 pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
-                                              0.9, 0.1, 1.0);
-pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 80, 1, 200);
-pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.9, 0.1,
+                                              0.7, 0.1, 1.0);
+pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 60, 1, 200);
+pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.91, 0.1,
                                        1.0);
 pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
                                             20, 1, 100);
@@ -686,6 +691,13 @@ void draw_scene() {
 
   // render cameras
   if (show_cameras3d) {
+    std::set<TimeCamId> cov_cameras;
+    for (auto& kf : cov_frames) {
+      TimeCamId tcidl = std::make_pair(kf, 0);
+      TimeCamId tcidr = std::make_pair(kf, 1);
+      cov_cameras.insert(tcidl);
+      cov_cameras.insert(tcidr);
+    }
     for (const auto& cam : cameras) {
       if (cam.first == tcid1) {
         render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_left,
@@ -693,6 +705,9 @@ void draw_scene() {
       } else if (cam.first == tcid2) {
         render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_right,
                       0.1f);
+      } else if (cov_cameras.find(cam.first) != cov_cameras.end()) {
+        render_camera(cam.second.T_w_c.matrix(), 2.0f,
+                      color_outlier_observation, 0.1f);
       } else if (cam.first.second == 0) {
         render_camera(cam.second.T_w_c.matrix(), 2.0f, color_camera_left, 0.1f);
       } else {
@@ -932,83 +947,79 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 ///////////////////////////////////////////////////////////////////////////////
 /// Here the algorithmically interesting implementation begins
 ///////////////////////////////////////////////////////////////////////////////
+void update_os_options() {
+  os_opts.num_features_per_image = num_features_per_image;
+  os_opts.rotate_features = rotate_features;
+  os_opts.feature_match_max_dist = feature_match_max_dist;
+  os_opts.match_max_dist_2d = match_max_dist_2d;
+  os_opts.min_kfs = min_kfs;
+  os_opts.max_redundant_obs_count = max_redundant_obs_count;
+  os_opts.new_kf_min_inliers = new_kf_min_inliers;
+  os_opts.max_kref_overlap = max_kref_overlap;
+  os_opts.max_frames_since_last_kf = max_frames_since_last_kf;
+  os_opts.max_num_kfs = max_num_kfs;
+  os_opts.min_weight = min_weight;
+  os_opts.cam_z_threshold = cam_z_threshold;
+  os_opts.reprojection_error_pnp_inlier_threshold_pixel =
+      reprojection_error_pnp_inlier_threshold_pixel;
+}
+void update_optimized_variables() {
+  opt_thread->join();
+  landmarks = landmarks_opt;
+  cameras = cameras_opt;
+  calib_cam = calib_cam_opt;
+
+  opt_finished = false;
+}
 
 bool next_step() {
   if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
-  /* TRACKING */
+  /* Miscellaneous */
+  update_os_options();
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
   prev_pose = current_pose;
-
-  // Orb feature detection
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
 
+  /* TRACKING */
+
+  // Orb feature detection for left image
   KeypointsData kdl;
-
   pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
-
   detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
                                 rotate_features);
   feature_corners[tcidl] = kdl;
 
-  std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>
-      projected_points;
-  std::vector<TrackId> projected_track_ids;
-  // project landmarks that previous frame saw -> kf_lms
-  /* ESTIMATE POSE BASED ON PREVIOUS FRAME */
+  // ESTIMATE POSE BASED ON PREVIOUS FRAME
   Landmarks prev_landmarks;
-  get_landmark_subset(landmarks, kf_lms, prev_landmarks);
-
-  project_landmarks(current_pose, calib_cam.intrinsics[0], prev_landmarks,
-                    cam_z_threshold, projected_points, projected_track_ids);
-
-  std::cout << "Projected " << projected_track_ids.size() << " points."
-            << std::endl;
-
   MatchData md_prev;
-  find_matches_landmarks(kdl, prev_landmarks, feature_corners, projected_points,
-                         projected_track_ids, match_max_dist_2d,
-                         feature_match_max_dist, feature_match_test_next_best,
-                         md_prev);
-
-  std::cout << "Found " << md_prev.matches.size() << " matches." << std::endl;
-
-  Sophus::SE3d T_w_c;
   std::vector<int> inliers;
+  get_landmark_subset(landmarks, prev_lm_ids, prev_landmarks);
+  project_match_localize(calib_cam, feature_corners, os_opts, kdl,
+                         prev_landmarks, inliers, current_pose, md_prev);
 
-  localize_camera(calib_cam.intrinsics[0], kdl, prev_landmarks,
-                  reprojection_error_pnp_inlier_threshold_pixel, md_prev, T_w_c,
-                  inliers);
-  current_pose = T_w_c;
+  std::cout << "Found " << md_prev.matches.size()
+            << " matches with previous frame." << std::endl;
 
-  /* PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP */
+  // PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP
   Landmarks local_landmarks;
+  MatchData md_local;
   get_local_map(md_prev, landmarks, kf_frames, min_weight, local_landmarks);
 
-  project_landmarks(current_pose, calib_cam.intrinsics[0], local_landmarks,
-                    cam_z_threshold, projected_points, projected_track_ids);
+  project_match_localize(calib_cam, feature_corners, os_opts, kdl,
+                         local_landmarks, inliers, current_pose, md_local);
 
-  std::cout << "Projected " << projected_track_ids.size() << " points."
+  std::cout << "Found " << md_local.matches.size() << " matches with local map."
             << std::endl;
 
-  MatchData md_local;
-  find_matches_landmarks(kdl, local_landmarks, feature_corners,
-                         projected_points, projected_track_ids,
-                         match_max_dist_2d, feature_match_max_dist,
-                         feature_match_test_next_best, md_local);
-  localize_camera(calib_cam.intrinsics[0], kdl, local_landmarks,
-                  reprojection_error_pnp_inlier_threshold_pixel, md_local,
-                  T_w_c, inliers);
-  current_pose = T_w_c;
-  std::cout << "Found " << md_local.matches.size() << " matches." << std::endl;
+  // keep track of match local landmarks for this frame
+  prev_lm_ids.clear();
+  for (auto& match : md_local.matches) {
+    prev_lm_ids.push_back(match.second);
+  }
 
   if (!opt_running && opt_finished) {
-    opt_thread->join();
-    landmarks = landmarks_opt;
-    cameras = cameras_opt;
-    calib_cam = calib_cam_opt;
-
-    opt_finished = false;
+    update_optimized_variables();
   }
   bool mapping_busy = opt_running || opt_finished;
   make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
@@ -1018,17 +1029,16 @@ bool next_step() {
   /*MAPPING*/
   if (take_keyframe) {
     std::cout << "Adding as keyframe..." << std::endl;
-    MatchData md_stereo;
+    // Orb features for right image
     KeypointsData kdr;
-
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
-
     detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
 
-    md_stereo.T_i_j = T_0_1;
-
+    // Stereo feature matching
     Eigen::Matrix3d E;
+    MatchData md_stereo;
+    md_stereo.T_i_j = T_0_1;
     computeEssential(T_0_1, E);
 
     matchDescriptors(kdl.corner_descriptors, kdr.corner_descriptors,
@@ -1044,27 +1054,36 @@ bool next_step() {
     feature_corners[tcidr] = kdr;
     feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
 
+    // Add new keyframe
     cameras[tcidl].T_w_c = current_pose;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
-    add_new_landmarks(tcidl, tcidr, kdl, kdr, T_w_c, calib_cam, inliers,
-                      md_stereo, md_local, landmarks, kf_lms, next_landmark_id);
+    std::cout << "Adding new landmarks...\n num prev: " << landmarks.size()
+              << std::endl;
+    add_new_landmarks(tcidl, tcidr, kdl, kdr, current_pose, calib_cam, inliers,
+                      md_stereo, md_local, landmarks, prev_lm_ids,
+                      next_landmark_id);
+    std::cout << "Num now: " << landmarks.size() << std::endl;
 
-    add_new_keyframe(tcidl.first, kf_lms, kf_frames);
+    add_new_keyframe(tcidl.first, prev_lm_ids, kf_frames);
 
-    remove_old_keyframes(cameras, landmarks, old_landmarks, kf_frames, min_kfs,
-                         max_redundant_obs_count);
+    // Remove redundant keyframes + associated points
+    remove_redundant_keyframes(cameras, landmarks, old_landmarks, kf_frames,
+                               min_kfs, max_redundant_obs_count);
 
-    // compute_covisibility(kf_frames, min_weight, cov_graph);
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
+    // Local Bundle Adjustment
+    get_cov_map(tcidl.first, kf_frames, min_weight, local_lms, cov_frames);
     optimize();
 
+    // TODO: is this really necessary?
     current_pose = cameras[tcidl].T_w_c;
   }
 
   // update image views
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
+  // track metrics
   trans_error = calculate_translation_error(
       current_pose, std::get<0>(groundtruths.at(current_frame)));
   running_trans_error += trans_error;
@@ -1133,22 +1152,23 @@ void compute_projections() {
   }
 }
 
-// Optimize the active map with bundle adjustment
+// Optimize local map
 void optimize() {
   size_t num_obs = 0;
   for (const auto& kv : landmarks) {
-    num_obs += kv.second.obs.size();
+    if (std::find(local_lms.begin(), local_lms.end(), kv.first) !=
+        local_lms.end()) {
+      num_obs += kv.second.obs.size();
+    }
   }
 
-  std::cerr << "Optimizing map with " << cameras.size() << " cameras, "
-            << landmarks.size() << " points and " << num_obs << " observations."
+  std::cerr << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
+            << local_lms.size() << " points and " << num_obs << " observations."
             << std::endl;
 
   // Fix oldest two cameras to fix SE3 and scale gauge. Making the whole second
   // camera constant is a bit suboptimal, since we only need 1 DoF, but it's
   // simple and the initial poses should be good from calibration.
-  FrameId fid = kf_frames.begin()->first;
-  // std::cout << "fid " << fid << std::endl;
 
   // Prepare bundle adjustment
   BundleAdjustmentOptions ba_options;
@@ -1164,11 +1184,16 @@ void optimize() {
 
   opt_running = true;
 
-  opt_thread.reset(new std::thread([fid, ba_options] {
-    std::set<TimeCamId> fixed_cameras = {{fid, 0}, {fid, 1}};
-
-    bundle_adjustment(feature_corners, ba_options, fixed_cameras, calib_cam_opt,
-                      cameras_opt, landmarks_opt);
+  opt_thread.reset(new std::thread([ba_options] {
+    std::set<TimeCamId> cov_cameras;
+    for (auto& kf : cov_frames) {
+      TimeCamId tcidl = std::make_pair(kf, 0);
+      TimeCamId tcidr = std::make_pair(kf, 1);
+      cov_cameras.insert(tcidl);
+      cov_cameras.insert(tcidr);
+    }
+    local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
+                            calib_cam_opt, cameras_opt, landmarks_opt);
 
     opt_finished = true;
     opt_running = false;
