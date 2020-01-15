@@ -104,7 +104,7 @@ std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
 Keyframes kf_frames;
-std::vector<TrackId> prev_lm_ids;
+std::set<TrackId> prev_lm_ids;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 double trans_error = 0;
@@ -128,7 +128,7 @@ tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 std::vector<FrameId> timestamps;
 
 std::vector<FrameId> cov_frames;
-std::vector<TrackId> local_lms;
+std::set<TrackId> local_lms;
 /// detected feature locations and descriptors
 Corners feature_corners;
 
@@ -258,7 +258,7 @@ int main(int argc, char** argv) {
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string cam_calib = "opt_calib.json";
 
-  CLI::App app{"Visual odometry."};
+  CLI::App app{"Orb SLAM."};
 
   app.add_option("--show-gui", show_gui, "Show GUI");
   app.add_option("--dataset-path", dataset_path,
@@ -973,6 +973,7 @@ void update_optimized_variables() {
 }
 
 bool next_step() {
+  std::cerr << "FRAME " << current_frame << std::endl;
   if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
   /* Miscellaneous */
@@ -1015,7 +1016,7 @@ bool next_step() {
   // keep track of match local landmarks for this frame
   prev_lm_ids.clear();
   for (auto& match : md_local.matches) {
-    prev_lm_ids.push_back(match.second);
+    prev_lm_ids.insert(match.second);
   }
 
   if (!opt_running && opt_finished) {
@@ -1156,8 +1157,7 @@ void compute_projections() {
 void optimize() {
   size_t num_obs = 0;
   for (const auto& kv : landmarks) {
-    if (std::find(local_lms.begin(), local_lms.end(), kv.first) !=
-        local_lms.end()) {
+    if (local_lms.find(kv.first) != local_lms.end()) {
       num_obs += kv.second.obs.size();
     }
   }

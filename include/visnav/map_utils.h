@@ -313,7 +313,7 @@ struct BundleAdjustmentOptions {
 void local_bundle_adjustment(const Corners& feature_corners,
                              const BundleAdjustmentOptions& options,
                              const std::set<TimeCamId> cov_cameras,
-                             const std::vector<TrackId> cov_lms,
+                             const std::set<TrackId> cov_lms,
                              Calibration& calib_cam, Cameras& cameras,
                              Landmarks& landmarks) {
   ceres::Problem problem;
@@ -329,8 +329,7 @@ void local_bundle_adjustment(const Corners& feature_corners,
   }
   // Optimize over local landmarks
   for (auto& landmark : landmarks) {
-    if (std::find(cov_lms.begin(), cov_lms.end(), landmark.first) ==
-        cov_lms.end())
+    if (cov_lms.find(landmark.first) == cov_lms.end())
       continue;  // lm isn't local
     // get 3d world point
     Eigen::Vector3d* p3d = &landmark.second.p;

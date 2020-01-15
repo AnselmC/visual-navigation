@@ -121,7 +121,8 @@ using CovisibilityGraph =
     std::map<FrameId, std::vector<std::tuple<FrameId, int>>>;
 
 // each keyframe has an associated vector of landmark ids
-using Keyframes = std::map<FrameId, std::vector<TrackId>>;
+using LandmarkIds = std::set<TrackId>;
+using Keyframes = std::map<FrameId, LandmarkIds>;
 
 struct OrbSLAMOptions {
   int num_features_per_image;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <set>
 
 #include <visnav/common_types.h>
@@ -17,13 +18,11 @@
 namespace visnav {
 
 void get_landmark_subset(const Landmarks& landmarks,
-                         const std::vector<TrackId> landmark_ids,
+                         const std::set<TrackId> landmark_ids,
                          Landmarks& landmarks_subset) {
   landmarks_subset.clear();
   for (auto& landmark : landmarks) {
-    if (std::find(landmark_ids.begin(), landmark_ids.end(), landmark.first) ==
-        landmark_ids.end())
-      continue;
+    if (landmark_ids.find(landmark.first) == landmark_ids.end()) continue;
     landmarks_subset.insert(landmark);
   }
 }
@@ -196,7 +195,7 @@ int get_kfs_shared_landmarks(const Keyframes& kf_frames, const MatchData& md,
   int max_count = 0;
   for (auto& kf : kf_frames) {
     int count = 0;
-    std::vector<TrackId> lms = kf.second;
+    LandmarkIds lms = kf.second;
     for (auto& match : md.matches) {
       TrackId trackId = match.second;
       bool kf_sees_landmark =
@@ -220,14 +219,14 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
                        const Sophus::SE3d& T_w_c0, const Calibration& calib_cam,
                        const std::vector<int> inliers,
                        const MatchData& md_stereo, const MatchData& md,
-                       Landmarks& landmarks, std::vector<TrackId>& kf_lms,
+                       Landmarks& landmarks, std::set<TrackId>& lm_ids,
                        TrackId& next_landmark_id) {
   auto cam0 = calib_cam.intrinsics.at(tcidl.second).get();
   auto cam1 = calib_cam.intrinsics.at(tcidr.second).get();
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
   const Eigen::Vector3d t_0_1 = T_0_1.translation();
   const Eigen::Matrix3d R_0_1 = T_0_1.rotationMatrix();
-  kf_lms.clear();
+  lm_ids.clear();
 
   // add observations to existing landmarks
   std::vector<std::pair<FeatureId, FeatureId>> existingFeatures;
@@ -240,17 +239,16 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
     if (std::find(inliers.begin(), inliers.end(), inlier_index) !=
         inliers.end()) {
       landmarks.at(trackid).obs.insert(std::make_pair(tcidl, featureid0));
-      kf_lms.push_back(trackid);
+      lm_ids.insert(trackid);
       foundFirst = true;
     }
     for (auto& stereo_match : md_stereo.inliers) {
       if (stereo_match.first == featureid0) {
         FeatureId featureid1 = stereo_match.second;
         landmarks.at(trackid).obs.insert(std::make_pair(tcidr, featureid1));
+        lm_ids.insert(trackid);
         if (foundFirst) {
           existingFeatures.push_back(std::make_pair(featureid0, featureid1));
-        } else {
-          kf_lms.push_back(trackid);
         }
       }
     }
@@ -280,7 +278,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
     new_landmark.obs.insert(std::make_pair(tcidl, stereo_match.first));
     new_landmark.obs.insert(std::make_pair(tcidr, stereo_match.second));
     landmarks.insert(std::make_pair(next_landmark_id, new_landmark));
-    kf_lms.push_back(++next_landmark_id);
+    lm_ids.insert(++next_landmark_id);
   }
 }
 
@@ -314,17 +312,21 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& old_landmarks,
 }
 void compute_covisibility(const Keyframes& kf_frames, const int& min_weight,
                           CovisibilityGraph& cov_graph) {
+  auto start = std::chrono::high_resolution_clock::now();
   cov_graph.clear();
   for (auto& kf : kf_frames) {
-    std::vector<TrackId> lm = kf.second;
+    LandmarkIds lm = kf.second;
     std::vector<std::tuple<FrameId, int>> weights;
     for (auto& other_kf : kf_frames) {
       if (kf.first == other_kf.first) continue;
-      std::vector<TrackId> other_lm = other_kf.second;
+      LandmarkIds other_lm = other_kf.second;
       int weight = 0;
       for (const TrackId& tid : lm) {
         for (const TrackId& other_tid : other_lm) {
-          if (tid == other_tid) weight++;
+          if (tid == other_tid) {
+            weight++;
+            break;
+          }
         }
       }
       if (weight >= min_weight) {
@@ -333,32 +335,36 @@ void compute_covisibility(const Keyframes& kf_frames, const int& min_weight,
     }
     cov_graph.insert(std::make_pair(kf.first, weights));
   }
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Covisibility took: " << time_taken << std::setprecision(9)
+            << " sec" << std::endl;
 }
 
 void get_neighbor_landmarks_and_ids(
     const Keyframes& kf_frames,
     const std::vector<std::tuple<FrameId, int>>& neighbors,
-    std::vector<TrackId>& local_lm_ids, std::vector<FrameId>& neighbor_ids) {
+    std::set<TrackId>& local_lm_ids, std::vector<FrameId>& neighbor_ids) {
   for (auto& neighbor : neighbors) {
     FrameId fid = std::get<0>(neighbor);
     neighbor_ids.push_back(fid);
-    std::vector<TrackId> lms = kf_frames.at(fid);
+    LandmarkIds lms = kf_frames.at(fid);
     for (auto& lmid : lms) {
-      if (std::find(local_lm_ids.begin(), local_lm_ids.end(), lmid) ==
-          local_lm_ids.end()) {
-        local_lm_ids.push_back(lmid);
-      }
+      local_lm_ids.insert(lmid);
     }
   }
 }
 void get_cov_map(const FrameId kf, const Keyframes& kf_frames,
-                 const int& min_weight, std::vector<TrackId>& local_lms,
+                 const int& min_weight, std::set<TrackId>& local_lms,
                  std::vector<FrameId>& cov_frames) {
   // get all landmarks from keyframes connected in cov graph
   cov_frames.clear();
   local_lms.clear();
   CovisibilityGraph cov_graph;
-  std::vector<TrackId> lm_ids;
+  LandmarkIds lm_ids;
   compute_covisibility(kf_frames, min_weight, cov_graph);
   auto neighbors = cov_graph.at(kf);
   get_neighbor_landmarks_and_ids(kf_frames, neighbors, local_lms, cov_frames);
@@ -371,13 +377,10 @@ void get_local_map(const MatchData& md_prev, const Landmarks& landmarks,
   get_kfs_shared_landmarks(kf_frames, md_prev, k1);
   CovisibilityGraph cov_graph;
   compute_covisibility(kf_frames, min_weight, cov_graph);
-  std::vector<FrameId> local_lm_ids;
+  std::set<FrameId> local_lm_ids;
   for (auto& kf : k1) {
     for (auto& lmid : kf_frames.at(kf)) {
-      if (std::find(local_lm_ids.begin(), local_lm_ids.end(), lmid) ==
-          local_lm_ids.end()) {
-        local_lm_ids.push_back(lmid);
-      }
+      local_lm_ids.insert(lmid);
     }
     auto neighbors = cov_graph.at(kf);
     std::vector<FrameId> neighbor_ids;
@@ -424,10 +427,9 @@ void make_keyframe_decision(bool& take_keyframe,
   take_keyframe = cond1 && cond2 && cond3;
 }
 
-void add_new_keyframe(const FrameId& new_kf,
-                      const std::vector<TrackId>& kf_landmarks,
+void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
                       Keyframes& kf_frames) {
-  kf_frames.insert(std::make_pair(new_kf, kf_landmarks));
+  kf_frames.insert(std::make_pair(new_kf, lm_ids));
 }
 
 double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
@@ -486,7 +488,7 @@ void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                 const double& max_redundant_obs_count) {
   for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
     if (kf_frames.size() < (uint)min_kfs) return;
-    std::vector<TrackId> current_landmarks = (*current_kf).second;
+    LandmarkIds current_landmarks = (*current_kf).second;
     int overlap_count = 0;
     for (auto& current_landmark : current_landmarks) {
       // if at least three other kf observe this landmark, increment the
