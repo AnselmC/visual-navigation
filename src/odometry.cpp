@@ -367,7 +367,15 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
+        auto start = std::chrono::high_resolution_clock::now();
         continue_next = next_step();
+        auto end = std::chrono::high_resolution_clock::now();
+        double time_taken =
+            (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+                 .count()) /
+            1e9;
+        std::cout << "Next step took: " << time_taken << std::setprecision(9)
+                  << " sec" << std::endl;
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -952,20 +960,6 @@ bool next_step() {
          << current_pose.unit_quaternion().coeffs()[1] << ","
          << current_pose.unit_quaternion().coeffs()[2] << "\n";
 
-  trans_error = calculate_translation_error(
-      current_pose, std::get<0>(groundtruths.at(current_frame)));
-  running_trans_error += trans_error;
-  ape = calculate_absolute_pose_error(
-      current_pose, std::get<0>(groundtruths.at(current_frame)));
-  if (current_frame > 1) {
-    rpe = calculate_relative_pose_error(
-        std::get<0>(groundtruths.at(current_frame)),
-        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
-        prev_pose);
-  } else {
-    rpe = 0;
-  }
-  estimated_path.push_back(current_pose.translation());
   current_frame++;
   return true;
 }
