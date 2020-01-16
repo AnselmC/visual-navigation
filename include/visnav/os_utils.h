@@ -29,7 +29,7 @@ void get_landmark_subset(const Landmarks& landmarks,
 void project_landmarks(
     const Sophus::SE3d& current_pose,
     const std::shared_ptr<AbstractCamera<double>>& cam,
-    const Landmarks& landmarks, const double cam_z_threshold,
+    const Landmarks& landmarks, const double d_min, const double d_max,
     std::vector<Eigen::Vector2d, Eigen::aligned_allocator<Eigen::Vector2d>>&
         projected_points,
     std::vector<TrackId>& projected_track_ids) {
@@ -41,7 +41,7 @@ void project_landmarks(
     TrackId trackid = landmark.first;
     Eigen::Vector3d p3d = landmark.second.p;
     Eigen::Vector3d p3d_c = current_pose.inverse() * p3d;
-    if (p3d_c[2] >= cam_z_threshold) {
+    if (p3d_c.norm() >= d_min && p3d_c.norm() <= d_max) {
       Eigen::Vector2d p2d_c = cam->project(p3d_c);
       if (p2d_c[0] >= 0 and p2d_c[0] <= 752 and p2d_c[1] >= 0 and
           p2d_c[1] <= 480) {
@@ -322,8 +322,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
             << " sec" << std::endl;
 }
 
-void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& old_landmarks,
-               Landmarks& landmarks) {
+void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& landmarks) {
   TimeCamId tcidl = std::pair<FrameId, CamId>(current_kf, 0);
   TimeCamId tcidr = std::pair<FrameId, CamId>(current_kf, 1);
   cameras.erase(tcidl);
@@ -341,9 +340,8 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& old_landmarks,
         ++obs_it;
       }
     }
-    // move landmarks with no more observations to old_landmarks
+    // remove landmarks with no more observations
     if (it->second.obs.size() == 0) {
-      old_landmarks.insert(*it);
       it = landmarks.erase(it);
     } else {
       ++it;
@@ -484,35 +482,20 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
   auto start = std::chrono::high_resolution_clock::now();
   double time_taken;
   for (auto& node : cov_graph) {
-    auto start_loop = std::chrono::high_resolution_clock::now();
     FrameId kf = node.first;
     if (kf == new_kf) continue;
     LandmarkIds curr_lms = kf_frames.at(kf);
     int curr_weight = 0;
-    auto start_comp = std::chrono::high_resolution_clock::now();
     for (const TrackId& trackid : curr_lms) {
       if (new_lms.find(trackid) != new_lms.end()) {
         curr_weight++;
       }
     }
-    auto end_comp = std::chrono::high_resolution_clock::now();
-    time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      end_comp - start_comp)
-                      .count()) /
-                 1e9;
-    std::cout << "comp took: " << time_taken << std::setprecision(9) << " sec"
-              << std::endl;
+
     if (curr_weight >= min_weight) {
       connections.insert(kf);
       node.second.insert(new_kf);
     }
-    auto end_loop = std::chrono::high_resolution_clock::now();
-    time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      end_loop - start_loop)
-                      .count()) /
-                 1e9;
-    std::cout << "loop took: " << time_taken << std::setprecision(9) << " sec"
-              << std::endl;
   }
   cov_graph.insert(std::make_pair(new_kf, connections));
   auto end = std::chrono::high_resolution_clock::now();
@@ -575,7 +558,7 @@ void remove_from_cov_graph(const FrameId& old_kf,
 }
 
 void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
-                                Landmarks& old_landmarks, Keyframes& kf_frames,
+                                Keyframes& kf_frames,
                                 CovisibilityGraph& cov_graph,
                                 const FrameId& new_kf, const int& min_kfs,
                                 const double& max_redundant_obs_count) {
@@ -602,7 +585,7 @@ void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
     double overlap_percentage =
         (double)overlap_count / (double)current_landmarks.size();
     if (overlap_percentage >= max_redundant_obs_count) {
-      remove_kf(current_kf->first, cameras, old_landmarks, landmarks);
+      remove_kf(current_kf->first, cameras, landmarks);
       remove_from_cov_graph((*current_kf).first, cov_graph);
       current_kf = kf_frames.erase(current_kf);
     } else {
@@ -630,7 +613,7 @@ void project_match_localize(const Calibration& calib_cam,
   std::vector<TrackId> projected_track_ids;
   auto start = std::chrono::high_resolution_clock::now();
   project_landmarks(current_pose, calib_cam.intrinsics[0], landmarks,
-                    os_opts.cam_z_threshold, projected_points,
+                    os_opts.d_min, os_opts.d_max, projected_points,
                     projected_track_ids);
 
   find_matches_landmarks(kdl, landmarks, feature_corners, projected_points,

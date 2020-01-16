@@ -109,6 +109,8 @@ std::set<TrackId> prev_lm_ids;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 std::vector<Sophus::SE3d> vo_poses;
+int frame_rate = 1;
+bool too_slow = false;
 double trans_error = 0;
 double running_trans_error = 0;
 double ape = 0;
@@ -149,9 +151,6 @@ Landmarks landmarks;
 /// copy of landmarks for optimization in parallel thread
 Landmarks landmarks_opt;
 
-/// landmark positions that were removed from the current map
-Landmarks old_landmarks;
-
 /// cashed info on reprojected landmarks; recomputed every time time from
 /// cameras, landmarks, and feature_tracks; used for visualization and
 /// determining outliers; indexed by images
@@ -191,8 +190,6 @@ pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
-pangolin::Var<bool> show_old_points3d("hidden.show_old_points3d", true, false,
-                                      true);
 
 //////////////////////////////////////////////
 /// Feature extraction and matching options
@@ -211,7 +208,7 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
 
 pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
 pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
-                                              0.7, 0.1, 1.0);
+                                              0.5, 0.1, 1.0);
 pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 60, 1, 200);
 pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.91, 0.1,
                                        1.0);
@@ -220,9 +217,10 @@ pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
 
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
-pangolin::Var<int> min_weight("hidden.min_weight", 15, 1, 100);
+pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 
-pangolin::Var<double> cam_z_threshold("hidden.cam_z_threshold", 0.1, 1.0, 0.0);
+pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
+pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
 
 //////////////////////////////////////////////
 /// Adding cameras and landmarks options
@@ -405,6 +403,7 @@ int main(int argc, char** argv) {
             (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
                  .count()) /
             1e9;
+        too_slow = (time_taken > 1.0 / double(frame_rate));
         std::cout << "Next step took: " << time_taken << std::setprecision(9)
                   << " sec" << std::endl;
       } else {
@@ -603,6 +602,8 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       text_row += 20;
     }
   }
+  std::string msg = too_slow ? "TOO SLOW" : "Good speed";
+  pangolin::GlFont::I().Text(msg).Draw(5, text_row);
 
   if (show_epipolar) {
     glLineWidth(1.0);
@@ -681,19 +682,18 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_visualodometry_left[3]{150, 75, 0};     // brown
-  const u_int8_t color_visualodometry_right[3]{181, 101, 29};  // light brown
-  const u_int8_t color_groundtruth_left[3]{255, 155, 0};       // orange
-  const u_int8_t color_groundtruth_right[3]{255, 255, 0};      // yellow
-  const u_int8_t color_camera_current[3]{255, 0, 0};           // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};              // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};             // dark blue
-  const u_int8_t color_points[3]{0, 0, 0};                     // black
-  const u_int8_t color_old_points[3]{170, 170, 170};           // gray
-  const u_int8_t color_selected_left[3]{0, 250, 0};            // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};           // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};          // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};    // purple
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};   // brown
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
+  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
+  const u_int8_t color_points[3]{0, 0, 0};                   // black
+  const u_int8_t color_old_points[3]{170, 170, 170};         // gray
+  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
 
   // render path
   if (show_path) {
@@ -747,10 +747,7 @@ void draw_scene() {
         glEnd();
         Eigen::Matrix4d left = (*it).matrix();
 
-        Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
-        Eigen::Matrix4d right = ((*it) * T_0_1).matrix();
         render_camera(left, 3.0f, color_visualodometry_left, 0.1f);
-        render_camera(right, 3.0f, color_visualodometry_right, 0.1f);
         glColor3ubv(color_camera_current);
         glLineWidth(1.0);
         // pangolin::GlFont::I()
@@ -831,18 +828,6 @@ void draw_scene() {
         glColor3ubv(color_points);
       }
 
-      pangolin::glVertex(kv_lm.second.p);
-    }
-    glEnd();
-  }
-
-  // render points
-  if (show_old_points3d && old_landmarks.size() > 0) {
-    glPointSize(3.0);
-    glBegin(GL_POINTS);
-
-    for (const auto& kv_lm : old_landmarks) {
-      glColor3ubv(color_old_points);
       pangolin::glVertex(kv_lm.second.p);
     }
     glEnd();
@@ -969,6 +954,8 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
 
     int id = 0;
 
+    double delta_ts, avg_delta;
+
     while (times) {
       std::string line;
       std::getline(times, line);
@@ -990,7 +977,10 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
         }
         continue;
       }
-
+      if (timestamps.size() > 0) {
+        double delta_ts = double(timestamp - timestamps.back()) / 1e9;
+        avg_delta += delta_ts;
+      }
       timestamps.push_back(timestamp);
       for (int i = 0; i < NUM_CAMS; i++) {
         TimeCamId tcid(id, i);
@@ -1010,6 +1000,9 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
     }
 
     std::cerr << "Loaded " << id << " images " << std::endl;
+    std::cout << "Avg delta: " << avg_delta / timestamps.size() << std::endl;
+    frame_rate = int(timestamps.size() / avg_delta);
+    std::cout << "Frame rate: " << frame_rate << std::endl;
   }
 
   load_groundtruth(dataset_path);
@@ -1051,7 +1044,8 @@ void update_os_options() {
   os_opts.max_frames_since_last_kf = max_frames_since_last_kf;
   os_opts.max_num_kfs = max_num_kfs;
   os_opts.min_weight = min_weight;
-  os_opts.cam_z_threshold = cam_z_threshold;
+  os_opts.d_min = d_min;
+  os_opts.d_max = d_max;
   os_opts.reprojection_error_pnp_inlier_threshold_pixel =
       reprojection_error_pnp_inlier_threshold_pixel;
 }
@@ -1065,10 +1059,8 @@ void update_optimized_variables() {
 }
 
 bool next_step() {
-  std::cerr << "FRAME " << current_frame << std::endl;
-  std::cout << "Cov graph size: " << cov_graph.size() << std::endl;
-  std::cout << "Keyframes size: " << kf_frames.size() << std::endl;
-  if (current_frame >= int(images.size()) / NUM_CAMS) return false;
+  std::cerr << "\n\nFRAME " << current_frame << std::endl;
+  if (current_frame >= int(groundtruths.size()) / NUM_CAMS) return false;
 
   /* Miscellaneous */
   update_os_options();
@@ -1154,20 +1146,16 @@ bool next_step() {
     cameras[tcidl].T_w_c = current_pose;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
-    std::cout << "Adding new landmarks...\n num prev: " << landmarks.size()
-              << std::endl;
     add_new_landmarks(tcidl, tcidr, kdl, kdr, current_pose, calib_cam, inliers,
                       md_stereo, md_local, landmarks, prev_lm_ids,
                       next_landmark_id);
-    std::cout << "Num now: " << landmarks.size() << std::endl;
 
     add_new_keyframe(tcidl.first, prev_lm_ids, min_weight, kf_frames,
                      cov_graph);
 
     // Remove redundant keyframes + associated points
-    remove_redundant_keyframes(cameras, landmarks, old_landmarks, kf_frames,
-                               cov_graph, tcidl.first, min_kfs,
-                               max_redundant_obs_count);
+    remove_redundant_keyframes(cameras, landmarks, kf_frames, cov_graph,
+                               tcidl.first, min_kfs, max_redundant_obs_count);
     // Local Bundle Adjustment
     get_cov_map(tcidl.first, kf_frames, cov_graph, local_lms, cov_frames);
     optimize();
@@ -1178,8 +1166,6 @@ bool next_step() {
         1e9;
     std::cout << "Second part took: " << time_taken << std::setprecision(9)
               << " sec" << std::endl;
-
-    std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
   }
 
   // update image views
@@ -1305,9 +1291,9 @@ void optimize() {
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);
 
+    compute_projections();
     opt_finished = true;
     opt_running = false;
-    compute_projections();
   }));
 
   // Update project info cache
