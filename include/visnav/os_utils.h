@@ -20,10 +20,20 @@ namespace visnav {
 void get_landmark_subset(const Landmarks& landmarks,
                          const std::set<TrackId>& landmark_ids,
                          Landmarks& landmarks_subset) {
+  auto start = std::chrono::high_resolution_clock::now();
   landmarks_subset.clear();
   for (auto& lid : landmark_ids) {
-    landmarks_subset.insert(std::make_pair(lid, landmarks.at(lid)));
+    if (landmarks.find(lid) != landmarks.end()) {
+      landmarks_subset.insert(std::make_pair(lid, landmarks.at(lid)));
+    }
   }
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Getting landmark subset took: " << time_taken
+            << std::setprecision(9) << " sec" << std::endl;
 }
 
 void project_landmarks(
@@ -338,6 +348,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
 }
 
 void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& landmarks) {
+  auto start = std::chrono::high_resolution_clock::now();
   TimeCamId tcidl = std::pair<FrameId, CamId>(current_kf, 0);
   TimeCamId tcidr = std::pair<FrameId, CamId>(current_kf, 1);
   cameras.erase(tcidl);
@@ -362,6 +373,13 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& landmarks) {
       ++it;
     }
   }
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Remove kf took: " << time_taken << std::setprecision(9)
+            << " sec" << std::endl;
 }
 void get_neighbor_landmarks_and_ids(const Keyframes& kf_frames,
                                     const Connections& neighbors,
@@ -444,25 +462,29 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
   }
 
   std::set<FrameId> k1;
-  int max_count = get_kfs_shared_landmarks(landmarks, md, min_weight_k1, k1);
 
   // TODO: change AND to OR and ensure mapping/optimization is interrupted
   // if frames_since_last_kf > 20
   bool cond1 = !mapping_busy;
-  //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
-  bool cond2 = int(md.matches.size()) > new_kf_min_inliers;
-  bool cond3 =
-      (double)max_count / (double)md.matches.size() <= max_kref_overlap;
   if (!cond1) {
     std::cout << "Mapping busy..." << std::endl;
-  }
+    take_keyframe = false;
+    return;
+  }  //! mapping_busy && frames_since_last_kf > max_frames_since_last_kf;
+  bool cond2 = int(md.matches.size()) > new_kf_min_inliers;
   if (!cond2) {
     std::cout << "Not enough matches..." << std::endl;
+    take_keyframe = false;
+    return;
   }
+  int max_count = get_kfs_shared_landmarks(landmarks, md, min_weight_k1, k1);
+  bool cond3 =
+      (double)max_count / (double)md.matches.size() <= max_kref_overlap;
+
   if (!cond3) {
     std::cout << "Not enough new points..." << std::endl;
   }
-  take_keyframe = cond1 && cond2 && cond3;
+  take_keyframe = cond3;
 }
 void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
                       const int min_weight, CovisibilityGraph& cov_graph) {
@@ -548,14 +570,10 @@ double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
   void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                   Keyframes& kf_frames,
                                   CovisibilityGraph& cov_graph,
-                                  const FrameId& new_kf, const int& min_kfs,
+                                  const int& min_kfs,
                                   const double& max_redundant_obs_count) {
     auto start = std::chrono::high_resolution_clock::now();
     for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
-      if (current_kf->first == new_kf) {
-        current_kf++;
-        continue;
-      }
       if (int(kf_frames.size()) < min_kfs) return;
       LandmarkIds current_landmarks = current_kf->second;
       int overlap_count = 0;

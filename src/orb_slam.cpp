@@ -105,6 +105,7 @@ std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
 
 Keyframes kf_frames;
+Keyframes kf_frames_opt;
 std::set<TrackId> prev_lm_ids;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
@@ -125,6 +126,7 @@ Calibration calib_cam;
 Calibration calib_cam_opt;
 
 CovisibilityGraph cov_graph;
+CovisibilityGraph cov_graph_opt;
 
 /// loaded images
 tbb::concurrent_unordered_map<TimeCamId, std::string> images;
@@ -398,17 +400,7 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
-        auto start = std::chrono::high_resolution_clock::now();
         continue_next = next_step();
-        auto end = std::chrono::high_resolution_clock::now();
-        double time_taken =
-            (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-                 .count()) /
-            1e9;
-        too_slow = (time_taken > 1.0 / double(frame_rate));
-        if (too_slow) too_slow_count++;
-        std::cout << "Next step took: " << time_taken << std::setprecision(9)
-                  << " sec" << std::endl;
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -421,6 +413,8 @@ int main(int argc, char** argv) {
     }
   }
 
+  float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
+  std::cout << "Too slow for " << percentage << " of the time" << std::endl;
   return 0;
 }
 
@@ -608,7 +602,7 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
     }
   }
   std::string msg =
-      too_slow ? "TOO SLOW (%.2f % too slow)" : "Good speed (%.2f % too slow)";
+      too_slow ? "TOO SLOW (%.2f % too slow)" : "Good speed (%.2f %% too slow)";
   glColor3ubv(too_slow ? color_red : color_green);
   float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
   pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
@@ -961,7 +955,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
 
     int id = 0;
 
-    double avg_delta;
+    double avg_delta = 0;
 
     while (times) {
       std::string line;
@@ -1062,11 +1056,14 @@ void update_optimized_variables() {
   landmarks = landmarks_opt;
   cameras = cameras_opt;
   calib_cam = calib_cam_opt;
+  cov_graph = cov_graph_opt;
+  kf_frames = kf_frames_opt;
 
   opt_finished = false;
 }
 
 bool next_step() {
+  auto start = std::chrono::high_resolution_clock::now();
   std::cerr << "\n\nFRAME " << current_frame << std::endl;
   std::cout << "Num keyframes: " << kf_frames.size() << std::endl;
   std::cout << "Num landmarks: " << landmarks.size() << std::endl;
@@ -1077,7 +1074,9 @@ bool next_step() {
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
   prev_pose = current_pose;
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
-
+  if (!opt_running && opt_finished) {
+    update_optimized_variables();
+  }
   /* TRACKING */
 
   // Orb feature detection for left image
@@ -1085,6 +1084,15 @@ bool next_step() {
   pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
   detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
                                 rotate_features);
+  auto end_dkad = std::chrono::high_resolution_clock::now();
+
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end_dkad - start)
+           .count()) /
+      1e9;
+  std::cout << "Detecting keypoints and descriptors took: " << time_taken
+            << std::setprecision(9) << " sec" << std::endl;
+  /*MAPPING*/
   feature_corners[tcidl] = kdl;
 
   // ESTIMATE POSE BASED ON PREVIOUS FRAME
@@ -1116,18 +1124,21 @@ bool next_step() {
     prev_lm_ids.insert(match.second);
   }
 
-  if (!opt_running && opt_finished) {
-    update_optimized_variables();
-  }
   bool mapping_busy = opt_running || opt_finished;
   make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
                          frames_since_last_kf, new_kf_min_inliers, min_kfs,
                          min_weight_k1, max_kref_overlap, mapping_busy,
                          md_local, kf_frames);
 
+  auto end_tracking = std::chrono::high_resolution_clock::now();
+  time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    end_tracking - start)
+                    .count()) /
+               1e9;
+  std::cout << "Tracking took: " << time_taken << std::setprecision(9) << " sec"
+            << std::endl;
   /*MAPPING*/
   if (take_keyframe) {
-    auto start = std::chrono::high_resolution_clock::now();
     std::cout << "Adding as keyframe..." << std::endl;
     // Orb features for right image
     KeypointsData kdr;
@@ -1166,17 +1177,17 @@ bool next_step() {
                      cov_graph);
 
     // Remove redundant keyframes + associated points
-    remove_redundant_keyframes(cameras, landmarks, kf_frames, cov_graph,
-                               tcidl.first, min_kfs, max_redundant_obs_count);
+    // remove_redundant_keyframes(cameras, landmarks, kf_frames, cov_graph,
+    //                           tcidl.first, min_kfs, max_redundant_obs_count);
     // Local Bundle Adjustment
     get_cov_map(tcidl.first, kf_frames, cov_graph, local_lms, cov_frames);
     optimize();
     auto end = std::chrono::high_resolution_clock::now();
-    double time_taken =
-        (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-             .count()) /
-        1e9;
-    std::cout << "Second part took: " << time_taken << std::setprecision(9)
+    time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      end - end_tracking)
+                      .count()) /
+                 1e9;
+    std::cout << "Mapping part took: " << time_taken << std::setprecision(9)
               << " sec" << std::endl;
   }
 
@@ -1199,6 +1210,15 @@ bool next_step() {
   }
   estimated_path.push_back(current_pose.translation());
   current_frame++;
+  auto end = std::chrono::high_resolution_clock::now();
+  time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  too_slow = (time_taken > 1.0 / double(frame_rate));
+  if (too_slow) too_slow_count++;
+  std::cout << "Next step took: " << time_taken << std::setprecision(9)
+            << " sec" << std::endl;
   return true;
 }
 
@@ -1288,6 +1308,8 @@ void optimize() {
   calib_cam_opt = calib_cam;
   cameras_opt = cameras;
   landmarks_opt = landmarks;
+  kf_frames_opt = kf_frames;
+  cov_graph_opt = cov_graph;
 
   opt_running = true;
 
@@ -1302,6 +1324,8 @@ void optimize() {
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);
 
+    remove_redundant_keyframes(cameras_opt, landmarks_opt, kf_frames_opt,
+                               cov_graph_opt, min_kfs, max_redundant_obs_count);
     compute_projections();
     opt_finished = true;
     opt_running = false;
