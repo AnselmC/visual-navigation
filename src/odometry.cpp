@@ -34,6 +34,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <fstream>
 #include <thread>
 
 #include <sophus/se3.hpp>
@@ -137,6 +138,9 @@ Landmarks old_landmarks;
 /// determining outliers; indexed by images
 ImageProjections image_projections;
 
+//csv file for recording pose of camera in Visual Odometry
+std::ofstream vo_csv;
+
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI parameters
 ///////////////////////////////////////////////////////////////////////////////
@@ -223,6 +227,9 @@ Button next_step_btn("ui.next_step", &next_step);
 // Parse parameters, load data, and create GUI window and event loop (or
 // process everything in non-gui mode).
 int main(int argc, char** argv) {
+  vo_csv.open("visual_odometry_poses.csv");
+  vo_csv << "#timestamp,x,y,z,w,qx,qy,qz\n";
+  std::cout << "csv file opened" << std::endl;
   bool show_gui = true;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string cam_calib = "opt_calib.json";
@@ -372,6 +379,8 @@ int main(int argc, char** argv) {
       // nop
     }
   }
+  vo_csv.close();
+  std::cout << "csv file closed" << std::endl;
 
   return 0;
 }
@@ -704,7 +713,6 @@ void draw_scene() {
     glEnd();
   }
 }
-
 // Load images, calibration, and features / matches if available
 void load_data(const std::string& dataset_path, const std::string& calib_path) {
   const std::string timestams_path = dataset_path + "/cam0/data.csv";
@@ -933,6 +941,33 @@ bool next_step() {
     current_frame++;
     return true;
   }
+  // Translation: in the order of [x,y,z]
+  vo_csv << current_frame << "," << current_pose.translation()[0] << ","
+         << current_pose.translation()[1] << ","
+         << current_pose.translation()[2] << ",";
+
+  // Quaternion: in the order of [w,x,y,z]
+  vo_csv << current_pose.unit_quaternion().coeffs()[3] << ","
+         << current_pose.unit_quaternion().coeffs()[0] << ","
+         << current_pose.unit_quaternion().coeffs()[1] << ","
+         << current_pose.unit_quaternion().coeffs()[2] << "\n";
+
+  trans_error = calculate_translation_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  running_trans_error += trans_error;
+  ape = calculate_absolute_pose_error(
+      current_pose, std::get<0>(groundtruths.at(current_frame)));
+  if (current_frame > 1) {
+    rpe = calculate_relative_pose_error(
+        std::get<0>(groundtruths.at(current_frame)),
+        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
+        prev_pose);
+  } else {
+    rpe = 0;
+  }
+  estimated_path.push_back(current_pose.translation());
+  current_frame++;
+  return true;
 }
 
 // Compute reprojections for all landmark observations for visualization and

@@ -75,7 +75,8 @@ using namespace visnav;
 void draw_image_overlay(pangolin::View& v, size_t cam_id);
 void change_display_to_image(const TimeCamId& tcid);
 void draw_scene();
-void load_data(const std::string& path, const std::string& calib_path);
+void load_data(const std::string& path, const std::string& calib_path,
+               const std::string& vo_path);
 bool next_step();
 void optimize();
 void compute_projections();
@@ -107,6 +108,7 @@ Keyframes kf_frames;
 std::set<TrackId> prev_lm_ids;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
+std::vector<Sophus::SE3d> vo_poses;
 double trans_error = 0;
 double running_trans_error = 0;
 double ape = 0;
@@ -127,7 +129,7 @@ tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 /// timestamps for all stereo pairs
 std::vector<FrameId> timestamps;
 
-std::vector<FrameId> cov_frames;
+std::set<FrameId> cov_frames;
 std::set<TrackId> local_lms;
 /// detected feature locations and descriptors
 Corners feature_corners;
@@ -184,6 +186,8 @@ pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
 pangolin::Var<bool> show_path("hidden.show_path", true, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
+pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
+                                        false, true);
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
@@ -256,6 +260,7 @@ Button next_step_btn("ui.next_step", &next_step);
 int main(int argc, char** argv) {
   bool show_gui = true;
   std::string dataset_path = "data/V1_01_easy/mav0";
+  std::string vo_path = "visual_odometry_poses.csv";
   std::string cam_calib = "opt_calib.json";
 
   CLI::App app{"Orb SLAM."};
@@ -263,6 +268,8 @@ int main(int argc, char** argv) {
   app.add_option("--show-gui", show_gui, "Show GUI");
   app.add_option("--dataset-path", dataset_path,
                  "Dataset path. Default: " + dataset_path);
+  app.add_option("--vo-path", vo_path,
+                 "Visual odometry poses path. Default: " + vo_path);
   app.add_option("--cam-calib", cam_calib,
                  "Path to camera calibration. Default: " + cam_calib);
 
@@ -272,7 +279,7 @@ int main(int argc, char** argv) {
     return app.exit(e);
   }
 
-  load_data(dataset_path, cam_calib);
+  load_data(dataset_path, cam_calib, vo_path);
 
   if (show_gui) {
     pangolin::CreateWindowAndBind("Main", 1800, 1000);
@@ -391,7 +398,15 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
+        auto start = std::chrono::high_resolution_clock::now();
         continue_next = next_step();
+        auto end = std::chrono::high_resolution_clock::now();
+        double time_taken =
+            (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+                 .count()) /
+            1e9;
+        std::cout << "Next step took: " << time_taken << std::setprecision(9)
+                  << " sec" << std::endl;
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -666,17 +681,19 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
-  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
-  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
-  const u_int8_t color_points[3]{0, 0, 0};                   // black
-  const u_int8_t color_old_points[3]{170, 170, 170};         // gray
-  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};     // brown
+  const u_int8_t color_visualodometry_right[3]{181, 101, 29};  // light brown
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};       // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};      // yellow
+  const u_int8_t color_camera_current[3]{255, 0, 0};           // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};              // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};             // dark blue
+  const u_int8_t color_points[3]{0, 0, 0};                     // black
+  const u_int8_t color_old_points[3]{170, 170, 170};           // gray
+  const u_int8_t color_selected_left[3]{0, 250, 0};            // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};           // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};          // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};    // purple
 
   // render path
   if (show_path) {
@@ -717,7 +734,42 @@ void draw_scene() {
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
   }
+  // render visual odometry
+  if (show_visualodometry) {
+    glColor3ubv(color_visualodometry_left);
+    glPointSize(3.0);
+    glBegin(GL_POINTS);
+    for (auto it = vo_poses.begin();
+         it <= vo_poses.begin() + current_frame && it != vo_poses.end(); it++) {
+      Eigen::Vector3d path_point = (*it).translation();
+      pangolin::glVertex(path_point);
+      if (it == vo_poses.begin() + current_frame) {
+        glEnd();
+        Eigen::Matrix4d left = (*it).matrix();
 
+        Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+        Eigen::Matrix4d right = ((*it) * T_0_1).matrix();
+        render_camera(left, 3.0f, color_visualodometry_left, 0.1f);
+        render_camera(right, 3.0f, color_visualodometry_right, 0.1f);
+        glColor3ubv(color_camera_current);
+        glLineWidth(1.0);
+        // pangolin::GlFont::I()
+        //     .Text("Current translation error: %f ", trans_error)
+        //     .Draw(pos[0], pos[1] + 0.5, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Running translation error: %f ",
+        //           running_trans_error / (current_frame + 1))
+        //     .Draw(pos[0], pos[1] + 1, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Absolute pose error: %f ", ape)
+        //     .Draw(pos[0], pos[1] + 1.5, pos[2]);
+        // pangolin::GlFont::I()
+        //     .Text("Relative pose error: %f ", rpe)
+        //     .Draw(pos[0], pos[1] + 2, pos[2]);
+        break;
+      }
+    }
+  }
   // render ground truth
   if (show_groundtruth) {
     glColor3ubv(color_groundtruth_left);
@@ -796,6 +848,44 @@ void draw_scene() {
     glEnd();
   }
 }
+void load_visualodometry(const std::string& vo_path) {
+  // Load IMU to world transformations
+  std::ifstream times(vo_path);
+  int cnt = 0;
+  Eigen::Vector3d trans;
+  Sophus::SE3d T_w_wref;
+  while (times) {
+    std::string line;
+    std::getline(times, line);
+    // ignore first line
+    if (line[0] == '#') continue;
+    std::stringstream ls(line);
+    std::string cell;
+    std::map<std::string, double> cells;
+    std::vector<std::string> elems = {"x", "y", "z", "qw", "qx", "qy", "qz"};
+    std::string name;
+    double value;
+    int j = 0;
+    while (std::getline(ls, cell, ',')) {
+      if ((uint)j > elems.size()) break;  // only want elements 1-8
+      if (j != 0) {
+        name = elems.at(j - 1);
+        value = std::stod(cell);
+        cells.insert(std::make_pair(name, value));
+      }
+      j++;
+    }
+    trans << cells["x"], cells["y"], cells["z"];
+    Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
+
+    Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
+    Sophus::SE3d T_wref_imu(rot, trans);
+
+    vo_poses.push_back(T_wref_imu);
+    cnt++;
+  }
+  std::cout << "Loaded " << cnt << " visual odometry path values" << std::endl;
+}
 void load_groundtruth(const std::string& dataset_path) {
   // Load transformation from cameras to baseframe
   const std::string caml_path = dataset_path + "/cam0/sensor.yaml";
@@ -868,7 +958,8 @@ void load_groundtruth(const std::string& dataset_path) {
 }
 
 // Load images, calibration, and features / matches if available
-void load_data(const std::string& dataset_path, const std::string& calib_path) {
+void load_data(const std::string& dataset_path, const std::string& calib_path,
+               const std::string& vo_path) {
   const std::string timestams_path = dataset_path + "/cam0/data.csv";
 
   {
@@ -922,6 +1013,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
   }
 
   load_groundtruth(dataset_path);
+  load_visualodometry(vo_path);
 
   {
     std::ifstream os(calib_path, std::ios::binary);
@@ -974,6 +1066,8 @@ void update_optimized_variables() {
 
 bool next_step() {
   std::cerr << "FRAME " << current_frame << std::endl;
+  std::cout << "Cov graph size: " << cov_graph.size() << std::endl;
+  std::cout << "Keyframes size: " << kf_frames.size() << std::endl;
   if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
   /* Miscellaneous */
@@ -1005,7 +1099,7 @@ bool next_step() {
   // PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP
   Landmarks local_landmarks;
   MatchData md_local;
-  get_local_map(md_prev, landmarks, kf_frames, min_weight, local_landmarks);
+  get_local_map(md_prev, landmarks, kf_frames, cov_graph, local_landmarks);
 
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
                          local_landmarks, inliers, current_pose, md_local);
@@ -1023,12 +1117,13 @@ bool next_step() {
     update_optimized_variables();
   }
   bool mapping_busy = opt_running || opt_finished;
-  make_keyframe_decision(take_keyframe, max_frames_since_last_kf,
+  make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
                          frames_since_last_kf, new_kf_min_inliers, min_kfs,
                          max_kref_overlap, mapping_busy, md_local, kf_frames);
 
   /*MAPPING*/
   if (take_keyframe) {
+    auto start = std::chrono::high_resolution_clock::now();
     std::cout << "Adding as keyframe..." << std::endl;
     // Orb features for right image
     KeypointsData kdr;
@@ -1066,19 +1161,25 @@ bool next_step() {
                       next_landmark_id);
     std::cout << "Num now: " << landmarks.size() << std::endl;
 
-    add_new_keyframe(tcidl.first, prev_lm_ids, kf_frames);
+    add_new_keyframe(tcidl.first, prev_lm_ids, min_weight, kf_frames,
+                     cov_graph);
 
     // Remove redundant keyframes + associated points
     remove_redundant_keyframes(cameras, landmarks, old_landmarks, kf_frames,
-                               min_kfs, max_redundant_obs_count);
+                               cov_graph, tcidl.first, min_kfs,
+                               max_redundant_obs_count);
+    // Local Bundle Adjustment
+    get_cov_map(tcidl.first, kf_frames, cov_graph, local_lms, cov_frames);
+    optimize();
+    auto end = std::chrono::high_resolution_clock::now();
+    double time_taken =
+        (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+             .count()) /
+        1e9;
+    std::cout << "Second part took: " << time_taken << std::setprecision(9)
+              << " sec" << std::endl;
 
     std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
-    // Local Bundle Adjustment
-    get_cov_map(tcidl.first, kf_frames, min_weight, local_lms, cov_frames);
-    optimize();
-
-    // TODO: is this really necessary?
-    current_pose = cameras[tcidl].T_w_c;
   }
 
   // update image views
@@ -1098,6 +1199,7 @@ bool next_step() {
   } else {
     rpe = 0;
   }
+  std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
   estimated_path.push_back(current_pose.translation());
   current_frame++;
   return true;
@@ -1106,6 +1208,7 @@ bool next_step() {
 // Compute reprojections for all landmark observations for visualization and
 // outlier removal.
 void compute_projections() {
+  auto start = std::chrono::high_resolution_clock::now();
   image_projections.clear();
 
   for (const auto& kv_lm : landmarks) {
@@ -1151,15 +1254,22 @@ void compute_projections() {
       image_projections[tcid].outlier_obs.push_back(proj_lm);
     }
   }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Compute projections took: " << time_taken
+            << std::setprecision(9) << " sec" << std::endl;
 }
 
 // Optimize local map
 void optimize() {
+  auto start = std::chrono::high_resolution_clock::now();
   size_t num_obs = 0;
-  for (const auto& kv : landmarks) {
-    if (local_lms.find(kv.first) != local_lms.end()) {
-      num_obs += kv.second.obs.size();
-    }
+  for (auto& lm : local_lms) {
+    num_obs += landmarks.at(lm).obs.size();
   }
 
   std::cerr << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
@@ -1197,8 +1307,15 @@ void optimize() {
 
     opt_finished = true;
     opt_running = false;
+    compute_projections();
   }));
 
   // Update project info cache
-  compute_projections();
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Optimize took: " << time_taken << std::setprecision(9) << " sec"
+            << std::endl;
 }

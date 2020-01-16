@@ -117,12 +117,12 @@ using TrackId = int64_t;
 using FeatureTracks = std::unordered_map<TrackId, FeatureTrack>;
 
 /// covisibility graph
-using CovisibilityGraph =
-    std::map<FrameId, std::vector<std::tuple<FrameId, int>>>;
+using Connections = std::set<FrameId>;
+using CovisibilityGraph = std::unordered_map<FrameId, Connections>;
 
 // each keyframe has an associated vector of landmark ids
 using LandmarkIds = std::set<TrackId>;
-using Keyframes = std::map<FrameId, LandmarkIds>;
+using Keyframes = std::unordered_map<FrameId, LandmarkIds>;
 
 struct OrbSLAMOptions {
   int num_features_per_image;

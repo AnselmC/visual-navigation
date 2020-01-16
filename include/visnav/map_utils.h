@@ -328,13 +328,12 @@ void local_bundle_adjustment(const Corners& feature_corners,
     loss_function = new ceres::HuberLoss(options.huber_parameter);
   }
   // Optimize over local landmarks
-  for (auto& landmark : landmarks) {
-    if (cov_lms.find(landmark.first) == cov_lms.end())
-      continue;  // lm isn't local
+  for (auto& lmid : cov_lms) {
+    auto& landmark = landmarks.at(lmid);
     // get 3d world point
-    Eigen::Vector3d* p3d = &landmark.second.p;
+    Eigen::Vector3d* p3d = &landmark.p;
     // Optimize over all positions
-    for (auto& obs : landmark.second.obs) {
+    for (auto& obs : landmark.obs) {
       TimeCamId tcid = obs.first;
       CamId cam_id = tcid.second;
       // get camera to world transformation
@@ -468,6 +467,6 @@ void bundle_adjustment(const Corners& feature_corners,
       std::cout << summary.FullReport() << std::endl;
       break;
   }
-}
+  }
 
 }  // namespace visnav
