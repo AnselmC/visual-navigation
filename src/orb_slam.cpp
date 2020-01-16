@@ -111,6 +111,7 @@ std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 std::vector<Sophus::SE3d> vo_poses;
 int frame_rate = 1;
 bool too_slow = false;
+int too_slow_count = 0;
 double trans_error = 0;
 double running_trans_error = 0;
 double ape = 0;
@@ -209,7 +210,7 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
 pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
 pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
                                               0.5, 0.1, 1.0);
-pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 60, 1, 200);
+pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 50, 1, 200);
 pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.91, 0.1,
                                        1.0);
 pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
@@ -218,6 +219,7 @@ pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
 pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
+pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
 pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
@@ -404,6 +406,7 @@ int main(int argc, char** argv) {
                  .count()) /
             1e9;
         too_slow = (time_taken > 1.0 / double(frame_rate));
+        if (too_slow) too_slow_count++;
         std::cout << "Next step took: " << time_taken << std::setprecision(9)
                   << " sec" << std::endl;
       } else {
@@ -425,6 +428,8 @@ int main(int argc, char** argv) {
 void draw_image_overlay(pangolin::View& v, size_t view_id) {
   UNUSED(v);
 
+  const u_int8_t color_red[3]{255, 0, 0};    // red
+  const u_int8_t color_green[3]{0, 250, 0};  // green
   size_t frame_id = view_id == 0 ? show_frame1 : show_frame2;
   size_t cam_id = view_id == 0 ? show_cam1 : show_cam2;
 
@@ -602,8 +607,11 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       text_row += 20;
     }
   }
-  std::string msg = too_slow ? "TOO SLOW" : "Good speed";
-  pangolin::GlFont::I().Text(msg).Draw(5, text_row);
+  std::string msg =
+      too_slow ? "TOO SLOW (%.2f % too slow)" : "Good speed (%.2f % too slow)";
+  glColor3ubv(too_slow ? color_red : color_green);
+  float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
+  pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
 
   if (show_epipolar) {
     glLineWidth(1.0);
@@ -689,7 +697,6 @@ void draw_scene() {
   const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
   const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
   const u_int8_t color_points[3]{0, 0, 0};                   // black
-  const u_int8_t color_old_points[3]{170, 170, 170};         // gray
   const u_int8_t color_selected_left[3]{0, 250, 0};          // green
   const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
   const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
@@ -954,7 +961,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
 
     int id = 0;
 
-    double delta_ts, avg_delta;
+    double avg_delta;
 
     while (times) {
       std::string line;
@@ -1044,6 +1051,7 @@ void update_os_options() {
   os_opts.max_frames_since_last_kf = max_frames_since_last_kf;
   os_opts.max_num_kfs = max_num_kfs;
   os_opts.min_weight = min_weight;
+  os_opts.min_weight_k1 = min_weight_k1;
   os_opts.d_min = d_min;
   os_opts.d_max = d_max;
   os_opts.reprojection_error_pnp_inlier_threshold_pixel =
@@ -1060,7 +1068,9 @@ void update_optimized_variables() {
 
 bool next_step() {
   std::cerr << "\n\nFRAME " << current_frame << std::endl;
-  if (current_frame >= int(groundtruths.size()) / NUM_CAMS) return false;
+  std::cout << "Num keyframes: " << kf_frames.size() << std::endl;
+  std::cout << "Num landmarks: " << landmarks.size() << std::endl;
+  if (current_frame >= int(groundtruths.size())) return false;
 
   /* Miscellaneous */
   update_os_options();
@@ -1091,7 +1101,8 @@ bool next_step() {
   // PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP
   Landmarks local_landmarks;
   MatchData md_local;
-  get_local_map(md_prev, landmarks, kf_frames, cov_graph, local_landmarks);
+  get_local_map(md_prev, landmarks, kf_frames, cov_graph, min_weight_k1,
+                local_landmarks);
 
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
                          local_landmarks, inliers, current_pose, md_local);
@@ -1111,7 +1122,8 @@ bool next_step() {
   bool mapping_busy = opt_running || opt_finished;
   make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
                          frames_since_last_kf, new_kf_min_inliers, min_kfs,
-                         max_kref_overlap, mapping_busy, md_local, kf_frames);
+                         min_weight_k1, max_kref_overlap, mapping_busy,
+                         md_local, kf_frames);
 
   /*MAPPING*/
   if (take_keyframe) {
@@ -1185,7 +1197,6 @@ bool next_step() {
   } else {
     rpe = 0;
   }
-  std::cout << "Num Keyframes: " << kf_frames.size() << std::endl;
   estimated_path.push_back(current_pose.translation());
   current_frame++;
   return true;
@@ -1254,9 +1265,9 @@ void compute_projections() {
 void optimize() {
   auto start = std::chrono::high_resolution_clock::now();
   size_t num_obs = 0;
-  for (auto& lm : local_lms) {
-    num_obs += landmarks.at(lm).obs.size();
-  }
+  // for (auto& lm : local_lms) {
+  //   num_obs += landmarks.at(lm).obs.size();
+  // }
 
   std::cerr << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
             << local_lms.size() << " points and " << num_obs << " observations."

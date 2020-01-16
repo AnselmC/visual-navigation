@@ -137,6 +137,7 @@ struct OrbSLAMOptions {
   int max_frames_since_last_kf;
   int max_num_kfs;
   int min_weight;
+  int min_weight_k1;
   double d_min;
   double d_max;
   double reprojection_error_pnp_inlier_threshold_pixel;
