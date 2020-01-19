@@ -24,7 +24,7 @@ void get_landmark_subset(const Landmarks& landmarks,
   landmarks_subset.clear();
   for (auto& lid : landmark_ids) {
     if (landmarks.find(lid) != landmarks.end()) {
-      landmarks_subset.insert(std::make_pair(lid, landmarks.at(lid)));
+      landmarks_subset.emplace(lid, landmarks.at(lid));
     }
   }
   auto end = std::chrono::high_resolution_clock::now();
@@ -55,8 +55,8 @@ void project_landmarks(
       Eigen::Vector2d p2d_c = cam->project(p3d_c);
       if (p2d_c[0] >= 0 and p2d_c[0] <= 752 and p2d_c[1] >= 0 and
           p2d_c[1] <= 480) {
-        projected_points.push_back(p2d_c);
-        projected_track_ids.push_back(trackid);
+        projected_points.emplace_back(p2d_c);
+        projected_track_ids.emplace_back(trackid);
       }
     }
   }
@@ -103,7 +103,7 @@ void find_matches_landmarks(
       double distance = std::sqrt(std::pow(point[0] - corner[0], 2) +
                                   std::pow(point[1] - corner[1], 2));
       if (distance <= match_max_dist_2d) {
-        candidate_points.push_back(
+        candidate_points.emplace_back(
             std::make_pair(point, projected_track_ids.at(j)));
       }
     }
@@ -126,7 +126,7 @@ void find_matches_landmarks(
           min_dist = hamming_dist;
         }
       }
-      distances.push_back(min_dist);
+      distances.emplace_back(min_dist);
     }
     // get best match from distances
     // distance needs to be smaller than feature_match_max_dist and at least
@@ -145,7 +145,7 @@ void find_matches_landmarks(
       if (smallest_dist < feature_match_max_dist and
           smallest_dist * feature_match_test_next_best < second_smallest_dist) {
         TrackId match = candidate_points.at(min_idx).second;
-        md.matches.push_back(std::make_pair(featureid0, match));
+        md.matches.emplace_back(std::make_pair(featureid0, match));
       }
     }
   }
@@ -186,8 +186,8 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
     Eigen::Vector2d p2d = kdl.corners.at(featureid);
     Eigen::Vector3d v3d = cam->unproject(p2d);
     Eigen::Vector3d p3d = landmarks.at(trackid).p;
-    bearingVectors.push_back(v3d);
-    points3d.push_back(p3d);
+    bearingVectors.emplace_back(v3d);
+    points3d.emplace_back(p3d);
   }
   opengv::absolute_pose::CentralAbsoluteAdapter adapter(bearingVectors,
                                                         points3d);
@@ -245,7 +245,7 @@ int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
         if (k_weight.find(ob.first.first) != k_weight.end()) {
           k_weight[ob.first.first]++;
         } else {
-          k_weight.insert(std::make_pair(ob.first.first, 1));
+          k_weight.emplace(ob.first.first, 1);
         }
         found_first = true;
       }
@@ -254,7 +254,7 @@ int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
       int count = kw.second;
       FrameId fid = kw.first;
       if (count > min_weight_k1) {
-        k1.insert(fid);
+        k1.emplace(fid);
       }
       if (count > max_count) {
         max_count = count;
@@ -296,17 +296,17 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
 
     if (std::find(inliers.begin(), inliers.end(), inlier_index) !=
         inliers.end()) {
-      landmarks.at(trackid).obs.insert(std::make_pair(tcidl, featureid0));
-      lm_ids.insert(trackid);
+      landmarks.at(trackid).obs.emplace(tcidl, featureid0);
+      lm_ids.emplace(trackid);
       foundFirst = true;
     }
     for (auto& stereo_match : md_stereo.inliers) {
       if (stereo_match.first == featureid0) {
         FeatureId featureid1 = stereo_match.second;
-        landmarks.at(trackid).obs.insert(std::make_pair(tcidr, featureid1));
-        lm_ids.insert(trackid);
+        landmarks.at(trackid).obs.emplace(tcidr, featureid1);
+        lm_ids.emplace(trackid);
         if (foundFirst) {
-          existingFeatures.push_back(std::make_pair(featureid0, featureid1));
+          existingFeatures.emplace_back(featureid0, featureid1);
         }
       }
     }
@@ -324,8 +324,8 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
     Eigen::Vector3d p3d0 = cam0->unproject(p2d0);
     Eigen::Vector3d p3d1 = cam1->unproject(p2d1);
     opengv::bearingVectors_t bearingVectors0, bearingVectors1;
-    bearingVectors0.push_back(p3d0);
-    bearingVectors1.push_back(p3d1);
+    bearingVectors0.emplace_back(p3d0);
+    bearingVectors1.emplace_back(p3d1);
     opengv::relative_pose::CentralRelativeAdapter adapter(
         bearingVectors0, bearingVectors1, t_0_1, R_0_1);
 
@@ -333,10 +333,10 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
     Eigen::Vector3d p3d_world = T_w_c0 * p3d0_tri;
     Landmark new_landmark;
     new_landmark.p = p3d_world;
-    new_landmark.obs.insert(std::make_pair(tcidl, stereo_match.first));
-    new_landmark.obs.insert(std::make_pair(tcidr, stereo_match.second));
-    landmarks.insert(std::make_pair(next_landmark_id, new_landmark));
-    lm_ids.insert(next_landmark_id++);
+    new_landmark.obs.emplace(tcidl, stereo_match.first);
+    new_landmark.obs.emplace(tcidr, stereo_match.second);
+    landmarks.emplace(next_landmark_id, new_landmark);
+    lm_ids.emplace(next_landmark_id++);
   }
   auto end = std::chrono::high_resolution_clock::now();
   double time_taken =
@@ -386,7 +386,7 @@ void get_neighbor_landmarks_and_ids(const Keyframes& kf_frames,
                                     LandmarkIds& local_lm_ids,
                                     std::set<FrameId>& neighbor_ids) {
   for (auto& neighbor : neighbors) {
-    neighbor_ids.insert(neighbor);
+    neighbor_ids.emplace(neighbor);
     LandmarkIds lms = kf_frames.at(neighbor);
     local_lm_ids.insert(lms.begin(), lms.end());
   }
@@ -456,7 +456,8 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
                             const double& max_kref_overlap,
                             const bool& mapping_busy, const MatchData& md,
                             const Keyframes& kf_frames) {
-  if (kf_frames.size() < (uint)min_kfs) {
+  if (kf_frames.size() < (uint)min_kfs ||
+      frames_since_last_kf > max_frames_since_last_kf) {
     take_keyframe = !mapping_busy;
     return;
   }
@@ -504,11 +505,11 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
     }
 
     if (curr_weight >= min_weight) {
-      connections.insert(kf);
-      node.second.insert(new_kf);
+      connections.emplace(kf);
+      node.second.emplace(new_kf);
     }
   }
-  cov_graph.insert(std::make_pair(new_kf, connections));
+  cov_graph.emplace(new_kf, connections);
   auto end = std::chrono::high_resolution_clock::now();
   time_taken =
       (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
@@ -521,7 +522,7 @@ void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
                       const int min_weight, Keyframes& kf_frames,
                       CovisibilityGraph& cov_graph) {
   auto start = std::chrono::high_resolution_clock::now();
-  kf_frames.insert(std::make_pair(new_kf, lm_ids));
+  kf_frames.emplace(new_kf, lm_ids);
   add_to_cov_graph(new_kf, kf_frames, min_weight, cov_graph);
   auto end = std::chrono::high_resolution_clock::now();
   double time_taken =
@@ -585,7 +586,7 @@ double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
         if (landmarks.find(current_landmark) == landmarks.end()) continue;
         Landmark lm = landmarks.at(current_landmark);
         for (auto& obs : lm.obs) {
-          unique_frameIds.insert(obs.first.first);
+          unique_frameIds.emplace(obs.first.first);
         }
 
         if (unique_frameIds.size() > 3) {

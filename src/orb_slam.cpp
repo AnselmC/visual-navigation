@@ -77,6 +77,8 @@ void change_display_to_image(const TimeCamId& tcid);
 void draw_scene();
 void load_data(const std::string& path, const std::string& calib_path,
                const std::string& vo_path);
+void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
+                                            KeypointsData& kdr);
 bool next_step();
 void optimize();
 void compute_projections();
@@ -103,7 +105,7 @@ int frames_since_last_kf = 0;
 
 std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
-
+std::atomic<bool> right_keypoint_detection_finished{false};
 Keyframes kf_frames;
 Keyframes kf_frames_opt;
 std::set<TrackId> prev_lm_ids;
@@ -120,6 +122,7 @@ double rpe = 0;
 std::vector<Eigen::Vector3d> estimated_path;
 
 std::shared_ptr<std::thread> opt_thread;
+std::shared_ptr<std::thread> kp_thread;
 
 /// intrinsic calibration
 Calibration calib_cam;
@@ -260,6 +263,8 @@ Button next_step_btn("ui.next_step", &next_step);
 // Parse parameters, load data, and create GUI window and event loop (or
 // process everything in non-gui mode).
 int main(int argc, char** argv) {
+  auto global_start = std::chrono::high_resolution_clock::now();
+  auto global_end = std::chrono::high_resolution_clock::now();
   bool show_gui = true;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string vo_path = "visual_odometry_poses.csv";
@@ -315,7 +320,7 @@ int main(int argc, char** argv) {
       std::shared_ptr<pangolin::ImageView> iv(new pangolin::ImageView);
 
       size_t idx = img_view.size();
-      img_view.push_back(iv);
+      img_view.emplace_back(iv);
 
       img_view_display.AddDisplay(*iv);
       iv->extern_draw_function =
@@ -400,9 +405,13 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
+        if (current_frame == 0) {
+          global_start = std::chrono::high_resolution_clock::now();
+        }
         continue_next = next_step();
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
+        global_end = std::chrono::high_resolution_clock::now();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
     }
@@ -413,6 +422,15 @@ int main(int argc, char** argv) {
     }
   }
 
+  double time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           global_end - global_start)
+                           .count()) /
+                      1e9;
+  std::cout << "Entire run took: " << time_taken << std::setprecision(9)
+            << " sec" << std::endl;
+  std::cout << "Average time per frame: " << time_taken / (current_frame + 1)
+            << std::endl;
+  /*MAPPING*/
   float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
   std::cout << "Too slow for " << percentage << " of the time" << std::endl;
   return 0;
@@ -601,8 +619,8 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       text_row += 20;
     }
   }
-  std::string msg =
-      too_slow ? "TOO SLOW (%.2f % too slow)" : "Good speed (%.2f %% too slow)";
+  std::string msg = too_slow ? "TOO SLOW (%.2f %% too slow)"
+                             : "Good speed (%.2f %% too slow)";
   glColor3ubv(too_slow ? color_red : color_green);
   float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
   pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
@@ -711,10 +729,8 @@ void draw_scene() {
   if (show_cameras3d) {
     std::set<TimeCamId> cov_cameras;
     for (auto& kf : cov_frames) {
-      TimeCamId tcidl = std::make_pair(kf, 0);
-      TimeCamId tcidr = std::make_pair(kf, 1);
-      cov_cameras.insert(tcidl);
-      cov_cameras.insert(tcidr);
+      cov_cameras.emplace(kf, 0);
+      cov_cameras.emplace(kf, 1);
     }
     for (const auto& cam : cameras) {
       if (cam.first == tcid1) {
@@ -867,7 +883,7 @@ void load_visualodometry(const std::string& vo_path) {
     Eigen::Matrix3d rot = quat.normalized().toRotationMatrix();
     Sophus::SE3d T_wref_imu(rot, trans);
 
-    vo_poses.push_back(T_wref_imu);
+    vo_poses.emplace_back(T_wref_imu);
     cnt++;
   }
   std::cout << "Loaded " << cnt << " visual odometry path values" << std::endl;
@@ -936,7 +952,7 @@ void load_groundtruth(const std::string& dataset_path) {
     }
     Sophus::SE3d T_w_cl = T_w_wref * T_wref_imu * T_i_cl;
     Sophus::SE3d T_w_cr = T_w_cl * T_cl_cr;
-    groundtruths.push_back(std::make_tuple(T_w_cl, T_w_cr, ts));
+    groundtruths.emplace_back(std::make_tuple(T_w_cl, T_w_cr, ts));
 
     id++;
   }
@@ -982,7 +998,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
         double delta_ts = double(timestamp - timestamps.back()) / 1e9;
         avg_delta += delta_ts;
       }
-      timestamps.push_back(timestamp);
+      timestamps.emplace_back(timestamp);
       for (int i = 0; i < NUM_CAMS; i++) {
         TimeCamId tcid(id, i);
 
@@ -1062,11 +1078,22 @@ void update_optimized_variables() {
   opt_finished = false;
 }
 
+void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
+                                            KeypointsData& kdr) {
+  right_keypoint_detection_finished = false;
+  kp_thread.reset(new std::thread([&] {
+    pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
+    detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
+                                  rotate_features);
+    right_keypoint_detection_finished = true;
+  }));
+}
 bool next_step() {
   auto start = std::chrono::high_resolution_clock::now();
   std::cerr << "\n\nFRAME " << current_frame << std::endl;
   std::cout << "Num keyframes: " << kf_frames.size() << std::endl;
   std::cout << "Num landmarks: " << landmarks.size() << std::endl;
+  // TODO make sure to join still running threads before returning here
   if (current_frame >= int(groundtruths.size())) return false;
 
   /* Miscellaneous */
@@ -1080,16 +1107,19 @@ bool next_step() {
   /* TRACKING */
 
   // Orb feature detection for left image
+  auto start_dkad = std::chrono::high_resolution_clock::now();
   KeypointsData kdl;
+  KeypointsData kdr;
   pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
+  detect_right_keypoints_separate_thread(tcidr, kdr);
   detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
                                 rotate_features);
   auto end_dkad = std::chrono::high_resolution_clock::now();
 
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end_dkad - start)
-           .count()) /
-      1e9;
+  double time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           end_dkad - start_dkad)
+                           .count()) /
+                      1e9;
   std::cout << "Detecting keypoints and descriptors took: " << time_taken
             << std::setprecision(9) << " sec" << std::endl;
   /*MAPPING*/
@@ -1121,7 +1151,7 @@ bool next_step() {
   // keep track of match local landmarks for this frame
   prev_lm_ids.clear();
   for (auto& match : md_local.matches) {
-    prev_lm_ids.insert(match.second);
+    prev_lm_ids.emplace(match.second);
   }
 
   bool mapping_busy = opt_running || opt_finished;
@@ -1139,18 +1169,22 @@ bool next_step() {
             << std::endl;
   /*MAPPING*/
   if (take_keyframe) {
+    frames_since_last_kf = 0;
     std::cout << "Adding as keyframe..." << std::endl;
     // Orb features for right image
-    KeypointsData kdr;
-    pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
-    detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
-                                  rotate_features);
+    // KeypointsData kdr;
+    // pangolin::ManagedImage<uint8_t> imgr =
+    // pangolin::LoadImage(images[tcidr]); detectKeypointsAndDescriptors(imgr,
+    // kdr, num_features_per_image,
+    //                              rotate_features);
 
     // Stereo feature matching
     Eigen::Matrix3d E;
     MatchData md_stereo;
     md_stereo.T_i_j = T_0_1;
     computeEssential(T_0_1, E);
+
+    kp_thread->join();
 
     matchDescriptors(kdl.corner_descriptors, kdr.corner_descriptors,
                      md_stereo.matches, feature_match_max_dist,
@@ -1189,8 +1223,12 @@ bool next_step() {
                  1e9;
     std::cout << "Mapping part took: " << time_taken << std::setprecision(9)
               << " sec" << std::endl;
+  } else {
+    frames_since_last_kf++;
   }
-
+  if (kp_thread->joinable()) {
+    kp_thread->join();
+  }
   // update image views
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
@@ -1208,7 +1246,7 @@ bool next_step() {
   } else {
     rpe = 0;
   }
-  estimated_path.push_back(current_pose.translation());
+  estimated_path.emplace_back(current_pose.translation());
   current_frame++;
   auto end = std::chrono::high_resolution_clock::now();
   time_taken =
@@ -1248,7 +1286,7 @@ void compute_projections() {
       proj_lm->point_3d_c = p_c;
       proj_lm->reprojection_error = (p_2d_corner - p_2d_repoj).norm();
 
-      image_projections[tcid].obs.push_back(proj_lm);
+      image_projections[tcid].obs.emplace_back(proj_lm);
     }
 
     for (const auto& kv_obs : kv_lm.second.outlier_obs) {
@@ -1268,7 +1306,7 @@ void compute_projections() {
       proj_lm->point_3d_c = p_c;
       proj_lm->reprojection_error = (p_2d_corner - p_2d_repoj).norm();
 
-      image_projections[tcid].outlier_obs.push_back(proj_lm);
+      image_projections[tcid].outlier_obs.emplace_back(proj_lm);
     }
   }
 
@@ -1316,10 +1354,8 @@ void optimize() {
   opt_thread.reset(new std::thread([ba_options] {
     std::set<TimeCamId> cov_cameras;
     for (auto& kf : cov_frames) {
-      TimeCamId tcidl = std::make_pair(kf, 0);
-      TimeCamId tcidr = std::make_pair(kf, 1);
-      cov_cameras.insert(tcidl);
-      cov_cameras.insert(tcidr);
+      cov_cameras.emplace(kf, 0);
+      cov_cameras.emplace(kf, 1);
     }
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);

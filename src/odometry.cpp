@@ -753,7 +753,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
         continue;
       }
 
-      timestamps.push_back(timestamp);
+      timestamps.emplace_back(timestamp);
 
       for (int i = 0; i < NUM_CAMS; i++) {
         TimeCamId tcid(id, i);
