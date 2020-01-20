@@ -28,3 +28,6 @@ data/*
 *.log
 *.png
 *_minted*
+# python
+*.pyc
+__pycache__

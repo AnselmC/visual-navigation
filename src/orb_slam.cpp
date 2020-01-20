@@ -79,6 +79,7 @@ void load_data(const std::string& path, const std::string& calib_path,
                const std::string& vo_path);
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr);
+void save_poses();
 bool next_step();
 void optimize();
 void compute_projections();
@@ -256,6 +257,8 @@ pangolin::Var<bool> continue_next("ui.continue_next", false, false, true);
 using Button = pangolin::Var<std::function<void(void)>>;
 
 Button next_step_btn("ui.next_step", &next_step);
+Button save_poses_btn("ui.save_poses", &save_poses);
+std::string pose_path = "save_poses/";
 
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI and Boilerplate Implementation
@@ -278,6 +281,8 @@ int main(int argc, char** argv) {
                  "Dataset path. Default: " + dataset_path);
   app.add_option("--vo-path", vo_path,
                  "Visual odometry poses path. Default: " + vo_path);
+  app.add_option("--poses-path", pose_path,
+                 "Where to save poses. Default: " + pose_path);
   app.add_option("--cam-calib", cam_calib,
                  "Path to camera calibration. Default: " + cam_calib);
 
@@ -851,6 +856,44 @@ void draw_scene() {
     glEnd();
   }
 }
+void append_pose_to_stream(const size_t& i, const Sophus::SE3d& pose,
+                           std::ofstream& out) {
+  // x, y, z
+  out << i << "," << pose.translation()[0] << "," << pose.translation()[1]
+      << "," << pose.translation()[2] << ",";
+  // qx, qy, qz, qw
+  out << pose.unit_quaternion().coeffs()[0] << ","
+      << pose.unit_quaternion().coeffs()[1] << ","
+      << pose.unit_quaternion().coeffs()[2] << ","
+      << pose.unit_quaternion().coeffs()[3] << "\n";
+}
+
+void save_poses() {
+  std::string gt = pose_path + "groundtruth.csv";
+  std::string estimated = pose_path + "estimated.csv";
+  std::string vo = pose_path + "vo.csv";
+  std::string header = "#timestamp,x,y,z,qx,qy,qz,qw\n";
+
+  std::ofstream gt_out, est_out, vo_out;
+  gt_out.open(gt);
+  est_out.open(estimated);
+  vo_out.open(vo);
+  gt_out << header;
+  est_out << header;
+  vo_out << header;
+  for (size_t i = 0; i < estimated_poses.size(); i++) {
+    auto& gt_pose = std::get<0>(groundtruths.at(i));
+    auto& est_pose = estimated_poses.at(i);
+    auto& vo_pose = vo_poses.at(i);
+
+    append_pose_to_stream(i, gt_pose, gt_out);
+    append_pose_to_stream(i, est_pose, est_out);
+    append_pose_to_stream(i, vo_pose, vo_out);
+  }
+  gt_out.close();
+  est_out.close();
+  vo_out.close();
+}
 void load_visualodometry(const std::string& vo_path) {
   // Load IMU to world transformations
   std::ifstream times(vo_path);
@@ -1081,9 +1124,9 @@ void update_optimized_variables() {
 
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr) {
-  if (right_keypoint_detection_running) {
-    kp_thread->join();
-  }
+  // if (right_keypoint_detection_running) {
+  //  kp_thread->join();
+  //}
   kp_thread.reset(new std::thread([&] {
     right_keypoint_detection_running = true;
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
@@ -1251,6 +1294,10 @@ bool next_step() {
   estimated_poses.emplace_back(current_pose);
   estimated_path.emplace_back(current_pose.translation());
   current_frame++;
+
+  if (kp_thread->joinable()) {
+    kp_thread->join();
+  }
   auto end = std::chrono::high_resolution_clock::now();
   time_taken =
       (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
