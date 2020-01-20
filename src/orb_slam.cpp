@@ -105,7 +105,7 @@ int frames_since_last_kf = 0;
 
 std::atomic<bool> opt_running{false};
 std::atomic<bool> opt_finished{false};
-std::atomic<bool> right_keypoint_detection_finished{false};
+std::atomic<bool> right_keypoint_detection_running{false};
 Keyframes kf_frames;
 Keyframes kf_frames_opt;
 std::set<TrackId> prev_lm_ids;
@@ -120,6 +120,7 @@ double running_trans_error = 0;
 double ape = 0;
 double rpe = 0;
 std::vector<Eigen::Vector3d> estimated_path;
+std::vector<Sophus::SE3d> estimated_poses;
 
 std::shared_ptr<std::thread> opt_thread;
 std::shared_ptr<std::thread> kp_thread;
@@ -1080,12 +1081,14 @@ void update_optimized_variables() {
 
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr) {
-  right_keypoint_detection_finished = false;
+  if (right_keypoint_detection_running) {
+    kp_thread->join();
+  }
   kp_thread.reset(new std::thread([&] {
+    right_keypoint_detection_running = true;
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
     detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
-    right_keypoint_detection_finished = true;
   }));
 }
 bool next_step() {
@@ -1185,6 +1188,7 @@ bool next_step() {
     computeEssential(T_0_1, E);
 
     kp_thread->join();
+    right_keypoint_detection_running = false;
 
     matchDescriptors(kdl.corner_descriptors, kdr.corner_descriptors,
                      md_stereo.matches, feature_match_max_dist,
@@ -1226,9 +1230,7 @@ bool next_step() {
   } else {
     frames_since_last_kf++;
   }
-  if (kp_thread->joinable()) {
-    kp_thread->join();
-  }
+
   // update image views
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
@@ -1246,6 +1248,7 @@ bool next_step() {
   } else {
     rpe = 0;
   }
+  estimated_poses.emplace_back(current_pose);
   estimated_path.emplace_back(current_pose.translation());
   current_frame++;
   auto end = std::chrono::high_resolution_clock::now();
@@ -1254,7 +1257,13 @@ bool next_step() {
            .count()) /
       1e9;
   too_slow = (time_taken > 1.0 / double(frame_rate));
-  if (too_slow) too_slow_count++;
+  if (too_slow)
+    too_slow_count++;
+  else {
+    int wait_for = int((1e9 / double(frame_rate)) - 1e9 * time_taken);
+    std::cout << "Waiting for " << wait_for << "nanoseconds" << std::endl;
+    std::this_thread::sleep_for(std::chrono::nanoseconds(wait_for));
+  }
   std::cout << "Next step took: " << time_taken << std::setprecision(9)
             << " sec" << std::endl;
   return true;
@@ -1322,14 +1331,9 @@ void compute_projections() {
 // Optimize local map
 void optimize() {
   auto start = std::chrono::high_resolution_clock::now();
-  size_t num_obs = 0;
-  // for (auto& lm : local_lms) {
-  //   num_obs += landmarks.at(lm).obs.size();
-  // }
 
   std::cerr << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
-            << local_lms.size() << " points and " << num_obs << " observations."
-            << std::endl;
+            << local_lms.size() << " points." << std::endl;
 
   // Fix oldest two cameras to fix SE3 and scale gauge. Making the whole second
   // camera constant is a bit suboptimal, since we only need 1 DoF, but it's
