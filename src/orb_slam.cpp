@@ -810,19 +810,19 @@ void draw_scene() {
         render_camera(right, 3.0f, color_groundtruth_right, 0.1f);
         glColor3ubv(color_camera_current);
         glLineWidth(1.0);
-        pangolin::GlFont::I()
-            .Text("Current translation error: %f ", trans_error)
-            .Draw(pos[0], pos[1] + 0.5, pos[2]);
-        pangolin::GlFont::I()
-            .Text("Running translation error: %f ",
-                  running_trans_error / (current_frame + 1))
-            .Draw(pos[0], pos[1] + 1, pos[2]);
-        pangolin::GlFont::I()
-            .Text("Absolute pose error: %f ", ape)
-            .Draw(pos[0], pos[1] + 1.5, pos[2]);
-        pangolin::GlFont::I()
-            .Text("Relative pose error: %f ", rpe)
-            .Draw(pos[0], pos[1] + 2, pos[2]);
+        // pangolin::GlFont::I()
+        //    .Text("Current translation error: %f ", trans_error)
+        //    .Draw(pos[0], pos[1] + 0.5, pos[2]);
+        // pangolin::GlFont::I()
+        //    .Text("Running translation error: %f ",
+        //          running_trans_error / (current_frame + 1))
+        //    .Draw(pos[0], pos[1] + 1, pos[2]);
+        // pangolin::GlFont::I()
+        //    .Text("Absolute pose error: %f ", ape)
+        //    .Draw(pos[0], pos[1] + 1.5, pos[2]);
+        // pangolin::GlFont::I()
+        //    .Text("Relative pose error: %f ", rpe)
+        //    .Draw(pos[0], pos[1] + 2, pos[2]);
         break;
       }
     }
@@ -1272,19 +1272,19 @@ bool next_step() {
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
   // track metrics
-  trans_error = calculate_translation_error(
-      current_pose, std::get<0>(groundtruths.at(current_frame)));
-  running_trans_error += trans_error;
-  ape = calculate_absolute_pose_error(
-      current_pose, std::get<0>(groundtruths.at(current_frame)));
-  if (current_frame > 1) {
-    rpe = calculate_relative_pose_error(
-        std::get<0>(groundtruths.at(current_frame)),
-        std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
-        prev_pose);
-  } else {
-    rpe = 0;
-  }
+  // trans_error = calculate_translation_error(
+  //    current_pose, std::get<0>(groundtruths.at(current_frame)));
+  // running_trans_error += trans_error;
+  // ape = calculate_absolute_pose_error(
+  //    current_pose, std::get<0>(groundtruths.at(current_frame)));
+  // if (current_frame > 1) {
+  //  rpe = calculate_relative_pose_error(
+  //      std::get<0>(groundtruths.at(current_frame)),
+  //      std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
+  //      prev_pose);
+  //} else {
+  //  rpe = 0;
+  //}
   estimated_poses.emplace_back(current_pose);
   estimated_path.emplace_back(current_pose.translation());
   current_frame++;
