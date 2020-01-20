@@ -1132,6 +1132,7 @@ void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
     detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
+    feature_corners[tcidr] = kdr;
   }));
 }
 bool next_step() {
@@ -1217,12 +1218,6 @@ bool next_step() {
   if (take_keyframe) {
     frames_since_last_kf = 0;
     std::cout << "Adding as keyframe..." << std::endl;
-    // Orb features for right image
-    // KeypointsData kdr;
-    // pangolin::ManagedImage<uint8_t> imgr =
-    // pangolin::LoadImage(images[tcidr]); detectKeypointsAndDescriptors(imgr,
-    // kdr, num_features_per_image,
-    //                              rotate_features);
 
     // Stereo feature matching
     Eigen::Matrix3d E;
@@ -1243,7 +1238,6 @@ bool next_step() {
     std::cout << "KF Found " << md_stereo.inliers.size() << " stereo-matches."
               << std::endl;
 
-    feature_corners[tcidr] = kdr;
     feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
 
     // Add new keyframe
