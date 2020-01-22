@@ -229,6 +229,8 @@ pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
 pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
+pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 100, 30,
+                                        150);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
 pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
@@ -490,18 +492,6 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
     text_row += 20;
   }
 
-  if (show_covgraph) {
-    for (auto node : cov_graph) {
-      FrameId kf = node.first;
-      Eigen::Vector3d node_position= cameras.at(TimeCamId(kf,0)).T_w_c.translation();
-      Connections neighbors = node.second;
-      for (FrameId neighbor : neighbors) {
-        Eigen::Vector3d neighbor_position = cameras.at(TimeCamId(neighbor,0)).T_w_c.translation();
-        pangolin.glDrawLine(node_position.x, node_position.y, node_position.z, neighbor_position.x, neighbor_position.y, neighbor_position.z);
-      }
-    }
-  }
-
   if (show_matches || show_inliers) {
     glLineWidth(1.0);
     glColor3f(0.0, 0.0, 1.0);  // blue
@@ -744,6 +734,30 @@ void draw_scene() {
     }
     glEnd();
   }
+  if (show_covgraph) {
+    glLineWidth(1.0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    CovisibilityGraph cov_copy = cov_graph;
+    for (auto& node : cov_copy) {
+      FrameId kf = node.first;
+      Eigen::Vector3d node_position =
+          cameras.at(TimeCamId(kf, 0)).T_w_c.translation();
+      Connections neighbors = node.second;
+      for (auto& neighbor : neighbors) {
+        Eigen::Vector3d neighbor_position =
+            cameras.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
+        if (neighbor.second > min_weight_essential) {
+          glColor3ubv(color_outlier_observation);  // essential
+        } else {
+          glColor3ubv(color_selected_both);  // covisibility
+        }
+        pangolin::glDrawLine(node_position[0], node_position[1],
+                             node_position[2], neighbor_position[0],
+                             neighbor_position[1], neighbor_position[2]);
+      }
+    }
+  }
 
   // render cameras
   if (show_cameras3d) {
@@ -818,7 +832,7 @@ void draw_scene() {
       if (ts_gt >= ts) {
         glEnd();
         Eigen::Matrix4d left = std::get<0>((*it)).matrix();
-        Eigen::Vector4d pos = left.col(3);
+        // Eigen::Vector4d pos = left.col(3);
         Eigen::Matrix4d right = std::get<1>((*it)).matrix();
         render_camera(left, 3.0f, color_groundtruth_left, 0.1f);
         render_camera(right, 3.0f, color_groundtruth_right, 0.1f);

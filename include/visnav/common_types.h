@@ -117,7 +117,7 @@ using TrackId = int64_t;
 using FeatureTracks = std::unordered_map<TrackId, FeatureTrack>;
 
 /// covisibility graph
-using Connections = std::set<FrameId>;
+using Connections = std::unordered_map<FrameId, int>;
 using CovisibilityGraph = std::unordered_map<FrameId, Connections>;
 
 // each keyframe has an associated vector of landmark ids

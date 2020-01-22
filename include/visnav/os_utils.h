@@ -390,8 +390,8 @@ void get_neighbor_landmarks_and_ids(const Keyframes& kf_frames,
                                     LandmarkIds& local_lm_ids,
                                     std::set<FrameId>& neighbor_ids) {
   for (auto& neighbor : neighbors) {
-    neighbor_ids.emplace(neighbor);
-    LandmarkIds lms = kf_frames.at(neighbor);
+    neighbor_ids.emplace(neighbor.first);
+    LandmarkIds lms = kf_frames.at(neighbor.first);
     local_lm_ids.insert(lms.begin(), lms.end());
   }
 }
@@ -509,8 +509,8 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
     }
 
     if (curr_weight >= min_weight) {
-      connections.emplace(kf);
-      node.second.emplace(new_kf);
+      connections.emplace(kf, curr_weight);
+      node.second.emplace(new_kf, curr_weight);
     }
   }
   cov_graph.emplace(new_kf, connections);
@@ -566,56 +566,11 @@ double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
                              CovisibilityGraph& cov_graph) {
     auto neighbors = cov_graph.at(old_kf);
     for (auto& neighbor : neighbors) {
-      auto& curr_neighbors = cov_graph.at(neighbor);
+      auto& curr_neighbors = cov_graph.at(neighbor.first);
       curr_neighbors.erase(old_kf);
     }
     cov_graph.erase(old_kf);
   }
-
-  void update_cov_graph(const TrackId& removed_lm, CovisibilityGraph& cov_graph, const int min_weight) {
-    for (auto kf: cov_graph) {
-      FrameId& current_kf = kf.first;
-      Connections& neighbors = kf.second;
-      
-      //checking to see if removed landmark is in landmarks of current keyframe
-      //if not, no need to update this keyframe
-      const LandmarkIds& lms = kf_frames.at(current_kf); 
-      if (lms.find(removed_lm) == lms.end()) {
-        continue;
-      }
-      
-      //this current keyframe has to be updated because one of its observed landmarks
-      //was removed
-      for (auto& neighbor : neighbors) {
-        if (neighbor == current_kf) return;
-        int curr_weight = 0;
-        for (const TrackId& trackid : lms) {
-          if (kf_frames.at(neighbor).find(trackid)) {
-            curr_weight++;
-          }
-        }
-      
-      //update is done by checking all its neighbors if its connections are still  
-      //weighted above the min_weight
-
-        if (curr_weight < min_weight) {
-          connections.erase(neighbor);
-          cov_graph.at(neighbor).erase(current_kf);
-        }
-
-        //if after the update, the connections of either current keyframe or its 
-        //neighbor = 0 -> remove the node from covisibility graph
-        if (connections.size() == 0) {
-          remove_from_cov_graph(current_kf, cov_graph);
-        }
-
-        if (cov_graph.at(neighbor).size() == 0) {
-          remove_from_cov_graph(neighbor, cov_graph);
-        }
-      }
-    }
-  }
-  
 
   void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                   Keyframes& kf_frames,
