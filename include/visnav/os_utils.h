@@ -421,7 +421,7 @@ double get_max_pose_difference(const Sophus::SE3d& ref_pose,
   double max_diff = 0;
   std::cout << "\n\n\nFINDING MAX DIFF of neighbors" << std::endl;
   for (auto& neighbor : neighbors) {
-    TimeCamId tcidl(neighbor, 0);
+    TimeCamId tcidl(neighbor.first, 0);
     Sophus::SE3d other_pose = cameras.at(tcidl).T_w_c;
     double diff = calculate_absolute_pose_error(ref_pose, other_pose);
     std::cout << "DIFF IS: " << diff << std::endl;
@@ -719,39 +719,14 @@ void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
             << " sec" << std::endl;
 }
 
-double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
-                                   const Sophus::SE3d& estimated_pose) {
-  double trans_error =
-      (groundtruth_pose.translation() - estimated_pose.translation()).norm();
-  return trans_error;
+void remove_from_cov_graph(const FrameId& old_kf,
+                           CovisibilityGraph& cov_graph) {
+  auto neighbors = cov_graph.at(old_kf);
+  for (auto& neighbor : neighbors) {
+    auto& curr_neighbors = cov_graph.at(neighbor.first);
+    curr_neighbors.erase(old_kf);
   }
-
-  double calculate_absolute_pose_error(const Sophus::SE3d& groundtruth_pose,
-                                       const Sophus::SE3d& estimated_pose) {
-    double ape = ((groundtruth_pose.inverse() * estimated_pose).matrix() -
-                  Eigen::Matrix4d::Identity())
-                     .norm();
-    return ape;
-  }
-
-  double calculate_relative_pose_error(
-      const Sophus::SE3d& gt_pose, const Sophus::SE3d& gt_pose_prev,
-      const Sophus::SE3d& est_pose, const Sophus::SE3d& est_pose_prev) {
-    Sophus::SE3d gt_tf = gt_pose_prev.inverse() * gt_pose;
-    Sophus::SE3d est_tf = est_pose_prev.inverse() * est_pose;
-
-    double rpe = calculate_absolute_pose_error(gt_tf, est_tf);
-    return rpe;
-  }
-
-  void remove_from_cov_graph(const FrameId& old_kf,
-                             CovisibilityGraph& cov_graph) {
-    auto neighbors = cov_graph.at(old_kf);
-    for (auto& neighbor : neighbors) {
-      auto& curr_neighbors = cov_graph.at(neighbor.first);
-      curr_neighbors.erase(old_kf);
-    }
-    cov_graph.erase(old_kf);
+  cov_graph.erase(old_kf);
   }
 
   void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
