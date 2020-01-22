@@ -183,6 +183,7 @@ pangolin::Var<int> show_frame2("ui.show_frame2", 0, 0, 1500);
 pangolin::Var<int> show_cam2("ui.show_cam2", 1, 0, NUM_CAMS - 1);
 pangolin::Var<bool> lock_frames("ui.lock_frames", true, false, true);
 pangolin::Var<bool> show_detected("ui.show_detected", true, false, true);
+pangolin::Var<bool> show_covgraph("ui.show_covgraph", true, false, true);
 pangolin::Var<bool> show_matches("ui.show_matches", true, false, true);
 pangolin::Var<bool> show_inliers("ui.show_inliers", true, false, true);
 pangolin::Var<bool> show_reprojections("ui.show_reprojections", true, false,
@@ -198,6 +199,7 @@ pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
+
 
 //////////////////////////////////////////////
 /// Feature extraction and matching options
@@ -486,6 +488,18 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       pangolin::GlFont::I().Text("Corners not processed").Draw(5, text_row);
     }
     text_row += 20;
+  }
+
+  if (show_covgraph) {
+    for (auto node : cov_graph) {
+      FrameId kf = node.first;
+      Eigen::Vector3d node_position= cameras.at(TimeCamId(kf,0)).T_w_c.translation();
+      Connections neighbors = node.second;
+      for (FrameId neighbor : neighbors) {
+        Eigen::Vector3d neighbor_position = cameras.at(TimeCamId(neighbor,0)).T_w_c.translation();
+        pangolin.glDrawLine(node_position.x, node_position.y, node_position.z, neighbor_position.x, neighbor_position.y, neighbor_position.z);
+      }
+    }
   }
 
   if (show_matches || show_inliers) {

@@ -17,6 +17,8 @@
 
 namespace visnav {
 
+//get subset of Landmarks with TrackId stored in landmark_ids
+// from landmarks into landmarks_subset
 void get_landmark_subset(const Landmarks& landmarks,
                          const std::set<TrackId>& landmark_ids,
                          Landmarks& landmarks_subset) {
@@ -223,6 +225,8 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
   std::cout << "localization took: " << time_taken << std::setprecision(9)
             << " sec" << std::endl;
 }
+
+
 int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
                              const int min_weight_k1, std::set<FrameId>& k1) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -231,8 +235,8 @@ int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
   // to do this we iterate through all landmarks the candidate sees
   // and get all keyframes that observe this landmark as well (obs of landmarks
   // - obs however is a timecamid and not a frameid) for every keyframe we add
-  // we would also like to now how many observations are shared go through
-  // matched landmarks
+  // we would also like to know how many observations are shared(update weight)
+  // go through matched landmarks
   std::map<FrameId, int> k_weight;
   for (auto& match : md.matches) {
     TrackId tid = match.second;
@@ -240,7 +244,7 @@ int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
     // go through all observing cams
     bool found_first = false;
     for (auto& ob : lm.obs) {
-      // don't increment for second camera of same kf
+      // don't increment for second camera of same kf(same frameid but  different camid)
       if (!found_first) {
         if (k_weight.find(ob.first.first) != k_weight.end()) {
           k_weight[ob.first.first]++;
@@ -568,6 +572,51 @@ double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
     cov_graph.erase(old_kf);
   }
 
+  void update_cov_graph(const TrackId& removed_lm, CovisibilityGraph& cov_graph, const int min_weight) {
+    for (auto kf: cov_graph) {
+      FrameId& current_kf = kf.first;
+      Connections& neighbors = kf.second;
+      
+      //checking to see if removed landmark is in landmarks of current keyframe
+      //if not, no need to update this keyframe
+      const LandmarkIds& lms = kf_frames.at(current_kf); 
+      if (lms.find(removed_lm) == lms.end()) {
+        continue;
+      }
+      
+      //this current keyframe has to be updated because one of its observed landmarks
+      //was removed
+      for (auto& neighbor : neighbors) {
+        if (neighbor == current_kf) return;
+        int curr_weight = 0;
+        for (const TrackId& trackid : lms) {
+          if (kf_frames.at(neighbor).find(trackid)) {
+            curr_weight++;
+          }
+        }
+      
+      //update is done by checking all its neighbors if its connections are still  
+      //weighted above the min_weight
+
+        if (curr_weight < min_weight) {
+          connections.erase(neighbor);
+          cov_graph.at(neighbor).erase(current_kf);
+        }
+
+        //if after the update, the connections of either current keyframe or its 
+        //neighbor = 0 -> remove the node from covisibility graph
+        if (connections.size() == 0) {
+          remove_from_cov_graph(current_kf, cov_graph);
+        }
+
+        if (cov_graph.at(neighbor).size() == 0) {
+          remove_from_cov_graph(neighbor, cov_graph);
+        }
+      }
+    }
+  }
+  
+
   void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                   Keyframes& kf_frames,
                                   CovisibilityGraph& cov_graph,
@@ -640,6 +689,10 @@ double calculate_translation_error(const Sophus::SE3d& groundtruth_pose,
         1e9;
     std::cout << "Project match loc took: " << time_taken
               << std::setprecision(9) << " sec" << std::endl;
+  }
+
+  void update_pose_with_constant_velocity() {
+
   }
 
 }  // Namespace visnav
