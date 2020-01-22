@@ -189,6 +189,7 @@ pangolin::Var<int> show_frame2("ui.show_frame2", 0, 0, 1500);
 pangolin::Var<int> show_cam2("ui.show_cam2", 1, 0, NUM_CAMS - 1);
 pangolin::Var<bool> lock_frames("ui.lock_frames", true, false, true);
 pangolin::Var<bool> show_detected("ui.show_detected", true, false, true);
+pangolin::Var<bool> show_covgraph("ui.show_covgraph", true, false, true);
 pangolin::Var<bool> show_matches("ui.show_matches", true, false, true);
 pangolin::Var<bool> show_inliers("ui.show_inliers", true, false, true);
 pangolin::Var<bool> show_reprojections("ui.show_reprojections", true, false,
@@ -204,6 +205,7 @@ pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
+
 
 //////////////////////////////////////////////
 /// Feature extraction and matching options
@@ -235,6 +237,8 @@ pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
 pangolin::Var<int> min_inliers_loop_closing("hidden.min_inliers_loop_closing",
                                             50, 1, 200);
+pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 100, 30,
+                                        150);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
 pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
@@ -739,6 +743,30 @@ void draw_scene() {
       pangolin::glVertex(pt);
     }
     glEnd();
+  }
+  if (show_covgraph) {
+    glLineWidth(1.0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    CovisibilityGraph cov_copy = cov_graph;
+    for (auto& node : cov_copy) {
+      FrameId kf = node.first;
+      Eigen::Vector3d node_position =
+          cameras.at(TimeCamId(kf, 0)).T_w_c.translation();
+      Connections neighbors = node.second;
+      for (auto& neighbor : neighbors) {
+        Eigen::Vector3d neighbor_position =
+            cameras.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
+        if (neighbor.second > min_weight_essential) {
+          glColor3ubv(color_outlier_observation);  // essential
+        } else {
+          glColor3ubv(color_selected_both);  // covisibility
+        }
+        pangolin::glDrawLine(node_position[0], node_position[1],
+                             node_position[2], neighbor_position[0],
+                             neighbor_position[1], neighbor_position[2]);
+      }
+    }
   }
 
   // render cameras
