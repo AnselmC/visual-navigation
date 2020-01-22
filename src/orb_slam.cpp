@@ -144,8 +144,8 @@ tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 std::vector<FrameId> timestamps;
 
 std::set<FrameId> cov_frames;
-std::set<FrameId> loop_closure_candidates;
 FrameId loop_closure_frame;
+FrameId loop_closure_candidate;
 std::set<TrackId> local_lms;
 /// detected feature locations and descriptors
 Corners feature_corners;
@@ -233,6 +233,8 @@ pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
 pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
+pangolin::Var<int> min_inliers_loop_closing("hidden.min_inliers_loop_closing",
+                                            50, 1, 200);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
 pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
@@ -752,8 +754,8 @@ void draw_scene() {
                  loop_closure_frame) {  // cam that loop closure was run on
         render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
                       0.1f);
-      } else if (loop_closure_candidates.find(cam.first.first) !=
-                 loop_closure_candidates.end()) {  // loop closure candidates
+      } else if (cam.first.first ==
+                 loop_closure_candidate) {  // loop closure candidates
         render_camera(cam.second.T_w_c.matrix(), 2.0f,
                       color_loop_closure_candidates, 0.1f);
       } else if (cov_frames.find(cam.first.first) !=
@@ -1118,6 +1120,7 @@ void update_os_options() {
   os_opts.max_num_kfs = max_num_kfs;
   os_opts.min_weight = min_weight;
   os_opts.min_weight_k1 = min_weight_k1;
+  os_opts.min_inliers_loop_closing = min_inliers_loop_closing;
   os_opts.d_min = d_min;
   os_opts.d_max = d_max;
   os_opts.reprojection_error_pnp_inlier_threshold_pixel =
@@ -1164,11 +1167,10 @@ bool next_step() {
 
   if (!loop_closure_running && loop_closure_finished) {
     lc_thread->join();
-    std::cout << "Found " << loop_closure_candidates.size()
-              << " loop closure candidates!" << std::endl;
     loop_closure_finished = false;
-    if (loop_closure_candidates.size() > 0) {
-      continue_next = false;
+    if (loop_closure_candidate != -1) {
+      std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
+      return false;  // don't continue next
     }
   }
   // only stop once all threads have joined
@@ -1398,16 +1400,23 @@ void detect_loop_closure(const FrameId& new_kf) {
   std::cout << "Detecting loop closure..." << std::endl;
   loop_closure_running = true;
   loop_closure_frame = new_kf;
-  lc_thread.reset(new std::thread([=, &loop_closure_candidates,
-                                   &loop_closure_running,
-                                   &loop_closure_finished] {  // pass by copy
+  Keyframes kf_frames_copy = kf_frames;
+  Cameras cameras_copy = cameras;
+  Landmarks landmarks_copy = landmarks;
+  CovisibilityGraph cov_graph_copy = cov_graph;
+  Corners feature_corners_copy = feature_corners;
+  lc_thread.reset(new std::thread([=] {  // pass by copy
     TimeCamId tcidl(new_kf, 0);
-    Sophus::SE3d pose = cameras.at(tcidl).T_w_c;
-    Connections neighbors = cov_graph.at(loop_closure_frame);
+    Sophus::SE3d pose = cameras_copy.at(tcidl).T_w_c;
+    Connections neighbors = cov_graph_copy.at(loop_closure_frame);
     double max_diff = get_max_pose_difference(
-        pose, cameras, neighbors);  // from keyframes connected in covgraph
-    get_loop_closure_candidates(loop_closure_frame, pose, cameras, neighbors,
-                                kf_frames, max_diff, loop_closure_candidates);
+        pose, cameras_copy, neighbors);  // from keyframes connected in covgraph
+    std::set<FrameId> loop_closure_candidates = get_loop_closure_candidates(
+        loop_closure_frame, pose, cameras_copy, neighbors, kf_frames, max_diff);
+    loop_closure_candidate =
+        perform_matching(kf_frames_copy, loop_closure_candidates, tcidl,
+                         feature_corners_copy, landmarks_copy, os_opts);
+    std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
     loop_closure_running = false;
     loop_closure_finished = true;
     std::cout << "Loop closure detection finished." << std::endl;

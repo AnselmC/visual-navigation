@@ -107,12 +107,16 @@ using ImageFeaturePair = std::pair<TimeCamId, FeatureId>;
 /// Feature tracks are collections of {ImageId => FeatureId}.
 /// I.e. a collection of all images that observed this feature and the
 /// corresponding feature index in that image.
+// TODO: why not use unordered_map?
 using FeatureTrack = std::map<TimeCamId, FeatureId>;
 
 /// Ids for feature tracks; also used for landmarks created from (some of) the
 /// tracks;
 using TrackId = int64_t;
 
+struct LandmarkMatchData {
+  std::vector<std::pair<TrackId, TrackId>> matches;
+};
 /// FeatureTracks is a collection {TrackId => FeatureTrack}
 using FeatureTracks = std::unordered_map<TrackId, FeatureTrack>;
 
@@ -138,6 +142,7 @@ struct OrbSLAMOptions {
   int max_num_kfs;
   int min_weight;
   int min_weight_k1;
+  int min_inliers_loop_closing;
   double d_min;
   double d_max;
   double reprojection_error_pnp_inlier_threshold_pixel;
