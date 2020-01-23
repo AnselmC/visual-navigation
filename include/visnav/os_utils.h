@@ -310,7 +310,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
                        const std::vector<int> inliers,
                        const MatchData& md_stereo, const MatchData& md,
                        Landmarks& landmarks, std::set<TrackId>& lm_ids,
-                       TrackId& next_landmark_id) {
+                       TrackId next_landmark_id) {
   auto start = std::chrono::high_resolution_clock::now();
   auto cam0 = calib_cam.intrinsics.at(tcidl.second).get();
   auto cam1 = calib_cam.intrinsics.at(tcidr.second).get();
@@ -432,12 +432,12 @@ double get_max_pose_difference(const Sophus::SE3d& ref_pose,
   std::cout << "MAX DIFF IS " << max_diff << std::endl;
   return max_diff;
 }
-std::set<FrameId> get_loop_closure_candidates(const FrameId& new_kf,
+std::set<FrameId> get_loop_closure_candidates(const FrameId new_kf,
                                               const Sophus::SE3d& pose,
                                               const Cameras& cameras,
                                               const Connections& neighbors,
                                               const Keyframes& kf_frames,
-                                              const double& max_diff) {
+                                              const double max_diff) {
   std::set<FrameId> candidates;
   std::cout << "\n\nFINDING CANDIDATES" << std::endl;
   for (auto& kf : kf_frames) {
@@ -533,8 +533,9 @@ FrameId perform_matching(const Keyframes& kf_frames,
                          const std::set<FrameId> candidates,
                          const TimeCamId& tcid_new,
                          const Corners& feature_corners,
-                         const Landmarks& landmarks,
-                         const OrbSLAMOptions& opts) {
+                         const Landmarks& landmarks, const OrbSLAMOptions& opts,
+                         LandmarkMatchData& lmmd) {
+  lmmd.matches.clear();
   FrameId final_candidate = -1;
   int num_best_inliers = 0;
   for (auto& candidate : candidates) {
@@ -549,7 +550,7 @@ FrameId perform_matching(const Keyframes& kf_frames,
     // findInliersEssential(kd_new, kd_candidate, calib_cam.intrinsics[0],
     //                     calib_cam.intrinsics[0], E, md_features);
     std::cout << "Num matches: " << md_features.matches.size() << std::endl;
-    LandmarkMatchData lmmd = get_landmark_correspondences(
+    LandmarkMatchData local_lmmd = get_landmark_correspondences(
         tcid_new, tcid_candidate, md_features, kf_frames, landmarks);
     std::cout << "Num matches that are landmarks: " << lmmd.matches.size()
               << std::endl;
@@ -563,6 +564,9 @@ FrameId perform_matching(const Keyframes& kf_frames,
         int(inliers.size()) > num_best_inliers) {
       final_candidate = candidate;
       num_best_inliers = inliers.size();
+      for (auto& inlier : inliers) {
+        lmmd.matches.push_back(local_lmmd.matches.at(inlier));
+      }
     }
   }
   return final_candidate;
@@ -634,13 +638,13 @@ void get_local_map(const MatchData& md_prev, const Landmarks& landmarks,
   get_landmark_subset(landmarks, local_lm_ids, local_landmarks);
 }
 
-void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
-                            const int& max_frames_since_last_kf,
-                            const int& frames_since_last_kf,
-                            const int& new_kf_min_inliers, const int& min_kfs,
-                            const int& min_weight_k1,
-                            const double& max_kref_overlap,
-                            const bool& mapping_busy, const MatchData& md,
+void make_keyframe_decision(bool take_keyframe, const Landmarks& landmarks,
+                            const int max_frames_since_last_kf,
+                            const int frames_since_last_kf,
+                            const int new_kf_min_inliers, const int min_kfs,
+                            const int min_weight_k1,
+                            const double max_kref_overlap,
+                            const bool mapping_busy, const MatchData& md,
                             const Keyframes& kf_frames) {
   if (kf_frames.size() < (uint)min_kfs ||
       frames_since_last_kf > max_frames_since_last_kf) {
@@ -673,7 +677,7 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
   }
   take_keyframe = cond3;
 }
-void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
+void add_to_cov_graph(const FrameId new_kf, const Keyframes& kf_frames,
                       const int min_weight, CovisibilityGraph& cov_graph) {
   Connections connections;
   LandmarkIds new_lms = kf_frames.at(new_kf);
@@ -684,7 +688,7 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
     if (kf == new_kf) continue;
     LandmarkIds curr_lms = kf_frames.at(kf);
     int curr_weight = 0;
-    for (const TrackId& trackid : curr_lms) {
+    for (const TrackId trackid : curr_lms) {
       if (new_lms.find(trackid) != new_lms.end()) {
         curr_weight++;
       }
@@ -704,7 +708,7 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
   std::cout << "Insert to cov graph took: " << time_taken
             << std::setprecision(9) << " sec" << std::endl;
 }
-void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
+void add_new_keyframe(const FrameId new_kf, const std::set<TrackId>& lm_ids,
                       const int min_weight, Keyframes& kf_frames,
                       CovisibilityGraph& cov_graph) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -719,8 +723,7 @@ void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
             << " sec" << std::endl;
 }
 
-void remove_from_cov_graph(const FrameId& old_kf,
-                           CovisibilityGraph& cov_graph) {
+void remove_from_cov_graph(const FrameId old_kf, CovisibilityGraph& cov_graph) {
   auto neighbors = cov_graph.at(old_kf);
   for (auto& neighbor : neighbors) {
     auto& curr_neighbors = cov_graph.at(neighbor.first);
@@ -729,11 +732,48 @@ void remove_from_cov_graph(const FrameId& old_kf,
   cov_graph.erase(old_kf);
 }
 
+void merge_landmarks(const FrameId kf, const LandmarkMatchData& lmmd,
+                     const int min_weight, CovisibilityGraph& cov_graph,
+                     Keyframes& kf_frames, Landmarks& landmarks) {
+  auto& neighbors = cov_graph.at(kf);
+  neighbors.emplace(kf, 0);  // weight doesn't matter
+  // iterate over all kf currently selected in covisibility graph
+  for (auto& neighbor : neighbors) {
+    // iterate through all landmark pairs (first is the landmark to be merged
+    // into second)
+    for (auto& lm_pair : lmmd.matches) {
+      LandmarkIds& lms = kf_frames.at(neighbor.first);
+      if (lms.find(lm_pair.first) != lms.end()) {  // neighbor sees old landmark
+        lms.erase(lm_pair.first);
+        lms.emplace(lm_pair.second);
+        TimeCamId tcidl(neighbor.first, 0),
+            tcidr(neighbor.first,
+                  1);  // need to check whether left, right or both cams see it
+        FeatureTrack& obs = landmarks.at(lm_pair.first).obs;
+        auto obs_left = obs.find(tcidl);
+        auto obs_right = obs.find(tcidr);
+        // erase old and insert new observations
+        if (obs_left != obs.end()) {
+          landmarks.at(lm_pair.second).obs.emplace(*obs_left);
+          obs.erase(obs_left);
+        }
+        if (obs_right != obs.end()) {
+          landmarks.at(lm_pair.second).obs.emplace(*obs_right);
+          obs.erase(obs_right);
+        }
+        if (obs.size() == 0) {  // remove landmark
+          landmarks.erase(lm_pair.first);
+        }
+      }
+    }
+    remove_from_cov_graph(neighbor.first, cov_graph);
+    add_to_cov_graph(neighbor.first, kf_frames, min_weight, cov_graph);
+  }
+}
 void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                 Keyframes& kf_frames,
-                                CovisibilityGraph& cov_graph,
-                                const int& min_kfs,
-                                const double& max_redundant_obs_count) {
+                                CovisibilityGraph& cov_graph, const int min_kfs,
+                                const double max_redundant_obs_count) {
   auto start = std::chrono::high_resolution_clock::now();
   for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
     if (int(kf_frames.size()) < min_kfs) return;
@@ -804,7 +844,4 @@ void project_match_localize(const Calibration& calib_cam,
   std::cout << "Project match loc took: " << time_taken << std::setprecision(9)
             << " sec" << std::endl;
 }
-
-void update_pose_with_constant_velocity() {}
-
 }  // Namespace visnav

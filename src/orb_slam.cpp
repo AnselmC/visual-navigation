@@ -1440,7 +1440,7 @@ void detect_loop_closure(const FrameId& new_kf) {
   Landmarks landmarks_copy = landmarks;
   CovisibilityGraph cov_graph_copy = cov_graph;
   Corners feature_corners_copy = feature_corners;
-  lc_thread.reset(new std::thread([=] {  // pass by copy
+  lc_thread.reset(new std::thread([&] {  // pass by copy
     TimeCamId tcidl(new_kf, 0);
     Sophus::SE3d pose = cameras_copy.at(tcidl).T_w_c;
     Connections neighbors = cov_graph_copy.at(loop_closure_frame);
@@ -1448,9 +1448,12 @@ void detect_loop_closure(const FrameId& new_kf) {
         pose, cameras_copy, neighbors);  // from keyframes connected in covgraph
     loop_closure_candidates = get_loop_closure_candidates(
         loop_closure_frame, pose, cameras_copy, neighbors, kf_frames, max_diff);
+    LandmarkMatchData lmmd;
     loop_closure_candidate =
         perform_matching(kf_frames_copy, loop_closure_candidates, tcidl,
-                         feature_corners_copy, landmarks_copy, os_opts);
+                         feature_corners_copy, landmarks_copy, os_opts, lmmd);
+    // merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_copy,
+    //                kf_frames_copy, landmarks_copy);
     std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
     loop_closure_running = false;
     loop_closure_finished = true;
