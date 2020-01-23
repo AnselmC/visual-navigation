@@ -588,6 +588,7 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
   }
 
   if (show_reprojections) {
+    ImageProjections image_projections = image_projections;
     if (image_projections.count(tcid) > 0) {
       glLineWidth(1.0);
       glColor3f(1.0, 0.0, 0.0);  // red
@@ -1435,12 +1436,12 @@ void detect_loop_closure(const FrameId& new_kf) {
   std::cout << "Detecting loop closure..." << std::endl;
   loop_closure_running = true;
   loop_closure_frame = new_kf;
-  Keyframes kf_frames_copy = kf_frames;
-  Cameras cameras_copy = cameras;
-  Landmarks landmarks_copy = landmarks;
-  CovisibilityGraph cov_graph_copy = cov_graph;
-  Corners feature_corners_copy = feature_corners;
-  lc_thread.reset(new std::thread([&] {  // pass by copy
+  lc_thread.reset(new std::thread([=] {  // pass by copy
+    Keyframes kf_frames_copy = kf_frames;
+    Cameras cameras_copy = cameras;
+    Landmarks landmarks_copy = landmarks;
+    CovisibilityGraph cov_graph_copy = cov_graph;
+    Corners feature_corners_copy = feature_corners;
     TimeCamId tcidl(new_kf, 0);
     Sophus::SE3d pose = cameras_copy.at(tcidl).T_w_c;
     Connections neighbors = cov_graph_copy.at(loop_closure_frame);
@@ -1452,8 +1453,10 @@ void detect_loop_closure(const FrameId& new_kf) {
     loop_closure_candidate =
         perform_matching(kf_frames_copy, loop_closure_candidates, tcidl,
                          feature_corners_copy, landmarks_copy, os_opts, lmmd);
-    // merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_copy,
-    //                kf_frames_copy, landmarks_copy);
+    if (loop_closure_candidate != -1) {
+      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_copy,
+                      kf_frames_copy, landmarks_copy);
+    }
     std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
     loop_closure_running = false;
     loop_closure_finished = true;
