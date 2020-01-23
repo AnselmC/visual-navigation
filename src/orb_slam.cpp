@@ -146,6 +146,7 @@ std::vector<FrameId> timestamps;
 std::set<FrameId> cov_frames;
 FrameId loop_closure_frame;
 FrameId loop_closure_candidate;
+std::set<FrameId> loop_closure_candidates;
 std::set<TrackId> local_lms;
 /// detected feature locations and descriptors
 Corners feature_corners;
@@ -205,7 +206,6 @@ pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
 pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
                                      true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
-
 
 //////////////////////////////////////////////
 /// Feature extraction and matching options
@@ -720,19 +720,22 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_visualodometry_left[3]{150, 75, 0};       // brown
-  const u_int8_t color_groundtruth_left[3]{255, 155, 0};         // orange
-  const u_int8_t color_groundtruth_right[3]{255, 255, 0};        // yellow
-  const u_int8_t color_camera_current[3]{255, 0, 0};             // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};                // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};               // dark blue
-  const u_int8_t color_points[3]{0, 0, 0};                       // black
-  const u_int8_t color_selected_left[3]{0, 250, 0};              // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};             // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};            // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};      // purple
-  const u_int8_t color_loop_closure_cam[3]{250, 0, 250};         // purple
-  const u_int8_t color_loop_closure_candidates[3]{0, 255, 155};  // bright green
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};   // brown
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
+  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
+  const u_int8_t color_points[3]{0, 0, 0};                   // black
+  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
+  const u_int8_t color_loop_closure_cam[3]{250, 0, 250};     // purple
+  const u_int8_t color_loop_closure_current_cam[3]{0, 255,
+                                                   155};  // bright green
+  const u_int8_t color_loop_closure_candidates[3]{155, 255,
+                                                  155};  // light green
 
   // render path
   if (show_path) {
@@ -783,7 +786,11 @@ void draw_scene() {
         render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
                       0.1f);
       } else if (cam.first.first ==
-                 loop_closure_candidate) {  // loop closure candidates
+                 loop_closure_candidate) {  // loop closure cam
+        render_camera(cam.second.T_w_c.matrix(), 2.0f,
+                      color_loop_closure_current_cam, 0.1f);
+      } else if (loop_closure_candidates.find(cam.first.first) !=
+                 loop_closure_candidates.end()) {  // loop closure candidates
         render_camera(cam.second.T_w_c.matrix(), 2.0f,
                       color_loop_closure_candidates, 0.1f);
       } else if (cov_frames.find(cam.first.first) !=
@@ -1309,7 +1316,7 @@ bool next_step() {
     // Local Bundle Adjustment
     get_cov_map(tcidl.first, kf_frames, cov_graph, local_lms, cov_frames);
     optimize();
-    if (!loop_closure_running) {
+    if (!loop_closure_running && !loop_closure_finished) {
       detect_loop_closure(tcidl.first);
     }
     auto end = std::chrono::high_resolution_clock::now();
@@ -1439,7 +1446,7 @@ void detect_loop_closure(const FrameId& new_kf) {
     Connections neighbors = cov_graph_copy.at(loop_closure_frame);
     double max_diff = get_max_pose_difference(
         pose, cameras_copy, neighbors);  // from keyframes connected in covgraph
-    std::set<FrameId> loop_closure_candidates = get_loop_closure_candidates(
+    loop_closure_candidates = get_loop_closure_candidates(
         loop_closure_frame, pose, cameras_copy, neighbors, kf_frames, max_diff);
     loop_closure_candidate =
         perform_matching(kf_frames_copy, loop_closure_candidates, tcidl,
