@@ -46,7 +46,7 @@ double calculate_relative_pose_error(const Sophus::SE3d& gt_pose,
   return rpe;
 }
 
-//get subset of Landmarks with TrackId stored in landmark_ids
+// get subset of Landmarks with TrackId stored in landmark_ids
 // from landmarks into landmarks_subset
 void get_landmark_subset(const Landmarks& landmarks,
                          const std::set<TrackId>& landmark_ids,
@@ -255,7 +255,6 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
             << " sec" << std::endl;
 }
 
-
 int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
                              const int min_weight_k1, std::set<FrameId>& k1) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -273,7 +272,8 @@ int get_kfs_shared_landmarks(const Landmarks& landmarks, const MatchData& md,
     // go through all observing cams
     bool found_first = false;
     for (auto& ob : lm.obs) {
-      // don't increment for second camera of same kf(same frameid but  different camid)
+      // don't increment for second camera of same kf(same frameid but different
+      // camid)
       if (!found_first) {
         if (k_weight.find(ob.first.first) != k_weight.end()) {
           k_weight[ob.first.first]++;
@@ -727,50 +727,50 @@ void remove_from_cov_graph(const FrameId& old_kf,
     curr_neighbors.erase(old_kf);
   }
   cov_graph.erase(old_kf);
-  }
+}
 
-  void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
-                                  Keyframes& kf_frames,
-                                  CovisibilityGraph& cov_graph,
-                                  const int& min_kfs,
-                                  const double& max_redundant_obs_count) {
-    auto start = std::chrono::high_resolution_clock::now();
-    for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
-      if (int(kf_frames.size()) < min_kfs) return;
-      LandmarkIds current_landmarks = current_kf->second;
-      int overlap_count = 0;
-      for (auto& current_landmark : current_landmarks) {
-        // if at least three other kf observe this landmark, increment the
-        // overlap_count
-        std::set<FrameId> unique_frameIds;
-        // TODO this shouldn't have to happen
-        if (landmarks.find(current_landmark) == landmarks.end()) continue;
-        Landmark lm = landmarks.at(current_landmark);
-        for (auto& obs : lm.obs) {
-          unique_frameIds.emplace(obs.first.first);
-        }
-
-        if (unique_frameIds.size() > 3) {
-          overlap_count++;
-        }
+void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
+                                Keyframes& kf_frames,
+                                CovisibilityGraph& cov_graph,
+                                const int& min_kfs,
+                                const double& max_redundant_obs_count) {
+  auto start = std::chrono::high_resolution_clock::now();
+  for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
+    if (int(kf_frames.size()) < min_kfs) return;
+    LandmarkIds current_landmarks = current_kf->second;
+    int overlap_count = 0;
+    for (auto& current_landmark : current_landmarks) {
+      // if at least three other kf observe this landmark, increment the
+      // overlap_count
+      std::set<FrameId> unique_frameIds;
+      // TODO this shouldn't have to happen
+      if (landmarks.find(current_landmark) == landmarks.end()) continue;
+      Landmark lm = landmarks.at(current_landmark);
+      for (auto& obs : lm.obs) {
+        unique_frameIds.emplace(obs.first.first);
       }
-      double overlap_percentage =
-          (double)overlap_count / (double)current_landmarks.size();
-      if (overlap_percentage >= max_redundant_obs_count) {
-        remove_kf(current_kf->first, cameras, landmarks);
-        remove_from_cov_graph((*current_kf).first, cov_graph);
-        current_kf = kf_frames.erase(current_kf);
-      } else {
-        current_kf++;
+
+      if (unique_frameIds.size() > 3) {
+        overlap_count++;
       }
     }
-    auto end = std::chrono::high_resolution_clock::now();
-    double time_taken =
-        (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-             .count()) /
-        1e9;
-    std::cout << "Rm keyframes took: " << time_taken << std::setprecision(9)
-              << " sec" << std::endl;
+    double overlap_percentage =
+        (double)overlap_count / (double)current_landmarks.size();
+    if (overlap_percentage >= max_redundant_obs_count) {
+      remove_kf(current_kf->first, cameras, landmarks);
+      remove_from_cov_graph((*current_kf).first, cov_graph);
+      current_kf = kf_frames.erase(current_kf);
+    } else {
+      current_kf++;
+    }
+  }
+  auto end = std::chrono::high_resolution_clock::now();
+  double time_taken =
+      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+           .count()) /
+      1e9;
+  std::cout << "Rm keyframes took: " << time_taken << std::setprecision(9)
+            << " sec" << std::endl;
 }
 
 void project_match_localize(const Calibration& calib_cam,
@@ -805,8 +805,6 @@ void project_match_localize(const Calibration& calib_cam,
             << " sec" << std::endl;
 }
 
-  void update_pose_with_constant_velocity() {
-
-  }
+void update_pose_with_constant_velocity() {}
 
 }  // Namespace visnav

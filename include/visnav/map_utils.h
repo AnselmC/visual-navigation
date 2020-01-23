@@ -467,6 +467,6 @@ void bundle_adjustment(const Corners& feature_corners,
       std::cout << summary.FullReport() << std::endl;
       break;
   }
-  }
+}
 
 }  // namespace visnav

@@ -33,8 +33,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <iostream>
 #include <fstream>
+#include <iostream>
 #include <thread>
 
 #include <sophus/se3.hpp>
@@ -138,7 +138,7 @@ Landmarks old_landmarks;
 /// determining outliers; indexed by images
 ImageProjections image_projections;
 
-//csv file for recording pose of camera in Visual Odometry
+// csv file for recording pose of camera in Visual Odometry
 std::ofstream vo_csv;
 
 ///////////////////////////////////////////////////////////////////////////////
