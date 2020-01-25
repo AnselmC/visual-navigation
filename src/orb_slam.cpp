@@ -192,7 +192,7 @@ pangolin::Var<int> show_frame2("ui.show_frame2", 0, 0, 1500);
 pangolin::Var<int> show_cam2("ui.show_cam2", 1, 0, NUM_CAMS - 1);
 pangolin::Var<bool> lock_frames("ui.lock_frames", true, false, true);
 pangolin::Var<bool> show_detected("ui.show_detected", true, false, true);
-pangolin::Var<bool> show_covgraph("ui.show_covgraph", true, false, true);
+pangolin::Var<bool> show_covgraph("hidden.show_covgraph", true, false, true);
 pangolin::Var<bool> show_matches("ui.show_matches", true, false, true);
 pangolin::Var<bool> show_inliers("ui.show_inliers", true, false, true);
 pangolin::Var<bool> show_reprojections("ui.show_reprojections", true, false,
@@ -201,12 +201,12 @@ pangolin::Var<bool> show_outlier_observations("ui.show_outlier_obs", false,
                                               false, true);
 pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
-pangolin::Var<bool> show_path("hidden.show_path", true, false, true);
+pangolin::Var<bool> show_path("hidden.show_path", false, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
-pangolin::Var<bool> show_visualodometry("hidden.show_visualodometry", true,
-                                        false, true);
-pangolin::Var<bool> show_groundtruth("hidden.show_groundtruth", true, false,
-                                     true);
+pangolin::Var<bool> show_vo_cam("ui.show_vo_cam", true, false, true);
+pangolin::Var<bool> show_vo_path("hidden.show_vo_path", false, false, true);
+pangolin::Var<bool> show_gt_cam("ui.show_groundtruth", true, false, true);
+pangolin::Var<bool> show_gt_path("hidden.show_gt_path", false, false, true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
 
 //////////////////////////////////////////////
@@ -370,6 +370,7 @@ int main(int argc, char** argv) {
 
       display3D.Activate(camera);
       glClearColor(0.95f, 0.95f, 0.95f, 1.0f);  // light gray background
+      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
       draw_scene();
 
@@ -722,19 +723,18 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_visualodometry_left[3]{150, 75, 0};    // brown
-  const u_int8_t color_groundtruth_left[3]{255, 155, 0};      // orange
-  const u_int8_t color_groundtruth_right[3]{255, 255, 0};     // yellow
-  const u_int8_t color_camera_current[3]{255, 0, 0};          // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};             // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};            // dark blue
-  const u_int8_t color_points[3]{0, 0, 0};                    // black
-  const u_int8_t color_selected_left[3]{0, 250, 0};           // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};          // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};         // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};   // purple
-  const u_int8_t color_loop_closure_cam[3]{255, 155, 0};      // purple
-  const u_int8_t color_loop_closure_current_cam[3]{0, 0, 0};  // black
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};   // brown
+  const u_int8_t color_groundtruth[3]{255, 155, 0};          // orange
+  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
+  const u_int8_t color_points[3]{255, 255, 255};             // white
+  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
+  const u_int8_t color_current_kf[3]{255, 0, 250};           // purple
+  const u_int8_t color_loop_closure_cam[3]{255, 255, 0};     // yellow
   const u_int8_t color_loop_closure_candidates[3]{155, 255,
                                                   155};  // light green
 
@@ -753,14 +753,15 @@ void draw_scene() {
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     CovisibilityGraph cov_copy = cov_graph;
+    Cameras cameras_copy = cameras;
     for (auto& node : cov_copy) {
       FrameId kf = node.first;
       Eigen::Vector3d node_position =
-          cameras.at(TimeCamId(kf, 0)).T_w_c.translation();
+          cameras_copy.at(TimeCamId(kf, 0)).T_w_c.translation();
       Connections neighbors = node.second;
       for (auto& neighbor : neighbors) {
         Eigen::Vector3d neighbor_position =
-            cameras.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
+            cameras_copy.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
         if (neighbor.second > min_weight_essential) {
           glColor3ubv(color_outlier_observation);  // essential
         } else {
@@ -775,11 +776,13 @@ void draw_scene() {
 
   // render cameras
   if (show_cameras3d) {
+    Eigen::Vector3d lc_cam_position;
+    Eigen::Vector3d ckf_cam_position;
     for (const auto& cam : cameras) {
       if (cam.first.first ==
           loop_closure_frame) {  // cam that loop closure was run on
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
-                      0.1f);
+        ckf_cam_position = cam.second.T_w_c.translation();
+        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_current_kf, 0.1f);
       } else if (cam.first == tcid1) {  // current left cam
         render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_left,
                       0.1f);
@@ -788,8 +791,9 @@ void draw_scene() {
                       0.1f);
       } else if (cam.first.first ==
                  loop_closure_candidate) {  // loop closure cam
-        render_camera(cam.second.T_w_c.matrix(), 2.0f,
-                      color_loop_closure_current_cam, 0.1f);
+        lc_cam_position = cam.second.T_w_c.translation();
+        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
+                      0.1f);
       } else if (loop_closure_candidates.find(cam.first.first) !=
                  loop_closure_candidates.end()) {  // loop closure candidates
         render_camera(cam.second.T_w_c.matrix(), 2.0f,
@@ -806,9 +810,22 @@ void draw_scene() {
       }
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
+    glLineWidth(3.0);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor3ubv(color_loop_closure_cam);
+    pangolin::glDrawLine(lc_cam_position[0], lc_cam_position[1],
+                         lc_cam_position[2], ckf_cam_position[0],
+                         ckf_cam_position[1], ckf_cam_position[2]);
+  }
+  if (show_vo_cam) {
+    glColor3ubv(color_visualodometry_left);
+    auto it = vo_poses.begin() + current_frame;
+    Eigen::Matrix4d left = it->matrix();
+    render_camera(left, 3.0f, color_visualodometry_left, 0.1f);
   }
   // render visual odometry
-  if (show_visualodometry) {
+  if (show_vo_path) {
     glColor3ubv(color_visualodometry_left);
     glPointSize(3.0);
     glBegin(GL_POINTS);
@@ -816,63 +833,29 @@ void draw_scene() {
          it <= vo_poses.begin() + current_frame && it != vo_poses.end(); it++) {
       Eigen::Vector3d path_point = (*it).translation();
       pangolin::glVertex(path_point);
-      if (it == vo_poses.begin() + current_frame) {
-        glEnd();
-        Eigen::Matrix4d left = (*it).matrix();
-
-        render_camera(left, 3.0f, color_visualodometry_left, 0.1f);
-        glColor3ubv(color_camera_current);
-        glLineWidth(1.0);
-        // pangolin::GlFont::I()
-        //     .Text("Current translation error: %f ", trans_error)
-        //     .Draw(pos[0], pos[1] + 0.5, pos[2]);
-        // pangolin::GlFont::I()
-        //     .Text("Running translation error: %f ",
-        //           running_trans_error / (current_frame + 1))
-        //     .Draw(pos[0], pos[1] + 1, pos[2]);
-        // pangolin::GlFont::I()
-        //     .Text("Absolute pose error: %f ", ape)
-        //     .Draw(pos[0], pos[1] + 1.5, pos[2]);
-        // pangolin::GlFont::I()
-        //     .Text("Relative pose error: %f ", rpe)
-        //     .Draw(pos[0], pos[1] + 2, pos[2]);
-        break;
-      }
     }
+    glEnd();
   }
   // render ground truth
-  if (show_groundtruth) {
-    glColor3ubv(color_groundtruth_left);
+  Eigen::Matrix4d gt_cam;
+  if (show_gt_path || show_gt_cam) {
+    glColor3ubv(color_groundtruth);
     int64_t ts = timestamps.at(current_frame);
     glPointSize(3.0);
     glBegin(GL_POINTS);
     for (auto it = groundtruths.begin();
          it <= groundtruths.begin() + current_frame; it++) {
       Eigen::Vector3d path_point = std::get<0>((*it)).translation();
-      pangolin::glVertex(path_point);
+      if (show_gt_path) {
+        pangolin::glVertex(path_point);
+      }
       int64_t ts_gt = std::get<2>((*it));
       if (ts_gt >= ts) {
         glEnd();
-        Eigen::Matrix4d left = std::get<0>((*it)).matrix();
-        // Eigen::Vector4d pos = left.col(3);
-        Eigen::Matrix4d right = std::get<1>((*it)).matrix();
-        render_camera(left, 3.0f, color_groundtruth_left, 0.1f);
-        render_camera(right, 3.0f, color_groundtruth_right, 0.1f);
-        glColor3ubv(color_camera_current);
-        glLineWidth(1.0);
-        // pangolin::GlFont::I()
-        //    .Text("Current translation error: %f ", trans_error)
-        //    .Draw(pos[0], pos[1] + 0.5, pos[2]);
-        // pangolin::GlFont::I()
-        //    .Text("Running translation error: %f ",
-        //          running_trans_error / (current_frame + 1))
-        //    .Draw(pos[0], pos[1] + 1, pos[2]);
-        // pangolin::GlFont::I()
-        //    .Text("Absolute pose error: %f ", ape)
-        //    .Draw(pos[0], pos[1] + 1.5, pos[2]);
-        // pangolin::GlFont::I()
-        //    .Text("Relative pose error: %f ", rpe)
-        //    .Draw(pos[0], pos[1] + 2, pos[2]);
+        if (show_gt_cam) {
+          gt_cam = std::get<0>((*it)).matrix();
+          render_camera(gt_cam, 3.0f, color_groundtruth, 0.1f);
+        }
         break;
       }
     }
@@ -1201,13 +1184,12 @@ bool next_step() {
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
   if (!opt_running && opt_finished) {
     update_optimized_variables();
+    if (loop_closure_candidate != -1) {
+      std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
+      return false;  // don't continue next
+    }
   }
 
-  if (loop_closure_candidate != -1) {
-    std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
-    loop_closure_candidate = -1;
-    return false;  // don't continue next
-  }
   // only stop once all threads have joined
   if (current_frame >= int(groundtruths.size())) return false;
   /* TRACKING */

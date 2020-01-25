@@ -543,8 +543,6 @@ FrameId perform_matching(const Keyframes& kf_frames,
     matchDescriptors(kd_new.corner_descriptors, kd_candidate.corner_descriptors,
                      md_features.matches, opts.feature_match_max_dist,
                      opts.feature_match_test_next_best);
-    // findInliersEssential(kd_new, kd_candidate, calib_cam.intrinsics[0],
-    //                     calib_cam.intrinsics[0], E, md_features);
     std::cout << "Num matches: " << md_features.matches.size() << std::endl;
     LandmarkMatchData local_lmmd = get_landmark_correspondences(
         tcid_new, tcid_candidate, md_features, kf_frames, landmarks);
