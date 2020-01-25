@@ -82,7 +82,7 @@ void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
 void save_poses();
 bool next_step();
 void optimize();
-void detect_loop_closure(const FrameId& new_kf);
+void detect_loop_closure();
 void compute_projections();
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -113,6 +113,7 @@ std::atomic<bool> right_keypoint_detection_running{false};
 Keyframes kf_frames;
 Keyframes kf_frames_opt;
 std::set<TrackId> prev_lm_ids;
+std::set<TrackId> prev_lm_ids_opt;
 
 std::vector<std::tuple<Sophus::SE3d, Sophus::SE3d, int64_t>> groundtruths;
 std::vector<Sophus::SE3d> vo_poses;
@@ -170,6 +171,7 @@ Landmarks landmarks_opt;
 /// cameras, landmarks, and feature_tracks; used for visualization and
 /// determining outliers; indexed by images
 ImageProjections image_projections;
+ImageProjections image_projections_opt;
 
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI parameters
@@ -225,11 +227,11 @@ pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
 pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
 pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
                                               0.5, 0.1, 1.0);
-pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 50, 1, 200);
+pangolin::Var<int> new_kf_min_inliers("hidden.new_kf_min_inliers", 130, 1, 200);
 pangolin::Var<double> max_kref_overlap("hidden.max_kref_overlap", 0.91, 0.1,
                                        1.0);
 pangolin::Var<int> max_frames_since_last_kf("hidden.max_frames_since_last_kf",
-                                            20, 1, 100);
+                                            40, 1, 100);
 
 pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 
@@ -588,7 +590,6 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
   }
 
   if (show_reprojections) {
-    ImageProjections image_projections = image_projections;
     if (image_projections.count(tcid) > 0) {
       glLineWidth(1.0);
       glColor3f(1.0, 0.0, 0.0);  // red
@@ -721,20 +722,19 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_visualodometry_left[3]{150, 75, 0};   // brown
-  const u_int8_t color_groundtruth_left[3]{255, 155, 0};     // orange
-  const u_int8_t color_groundtruth_right[3]{255, 255, 0};    // yellow
-  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
-  const u_int8_t color_points[3]{0, 0, 0};                   // black
-  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
-  const u_int8_t color_loop_closure_cam[3]{250, 0, 250};     // purple
-  const u_int8_t color_loop_closure_current_cam[3]{0, 255,
-                                                   155};  // bright green
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};    // brown
+  const u_int8_t color_groundtruth_left[3]{255, 155, 0};      // orange
+  const u_int8_t color_groundtruth_right[3]{255, 255, 0};     // yellow
+  const u_int8_t color_camera_current[3]{255, 0, 0};          // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};             // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};            // dark blue
+  const u_int8_t color_points[3]{0, 0, 0};                    // black
+  const u_int8_t color_selected_left[3]{0, 250, 0};           // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};          // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};         // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};   // purple
+  const u_int8_t color_loop_closure_cam[3]{255, 155, 0};      // purple
+  const u_int8_t color_loop_closure_current_cam[3]{0, 0, 0};  // black
   const u_int8_t color_loop_closure_candidates[3]{155, 255,
                                                   155};  // light green
 
@@ -776,15 +776,15 @@ void draw_scene() {
   // render cameras
   if (show_cameras3d) {
     for (const auto& cam : cameras) {
-      if (cam.first == tcid1) {  // current left cam
+      if (cam.first.first ==
+          loop_closure_frame) {  // cam that loop closure was run on
+        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
+                      0.1f);
+      } else if (cam.first == tcid1) {  // current left cam
         render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_left,
                       0.1f);
       } else if (cam.first == tcid2) {  // current right cam
         render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_right,
-                      0.1f);
-      } else if (cam.first.first ==
-                 loop_closure_frame) {  // cam that loop closure was run on
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
                       0.1f);
       } else if (cam.first.first ==
                  loop_closure_candidate) {  // loop closure cam
@@ -1083,7 +1083,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
         std::string temp;
         times >> temp;
         if (temp.size() > 0) {
-          std::cerr << "Skipping '" << temp << "' while reading times."
+          std::cout << "Skipping '" << temp << "' while reading times."
                     << std::endl;
         }
         continue;
@@ -1110,7 +1110,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
       id++;
     }
 
-    std::cerr << "Loaded " << id << " images " << std::endl;
+    std::cout << "Loaded " << id << " images " << std::endl;
     std::cout << "Avg delta: " << avg_delta / timestamps.size() << std::endl;
     frame_rate = int(timestamps.size() / avg_delta);
     std::cout << "Frame rate: " << frame_rate << std::endl;
@@ -1128,7 +1128,7 @@ void load_data(const std::string& dataset_path, const std::string& calib_path,
       std::cout << "Loaded camera" << std::endl;
 
     } else {
-      std::cerr << "could not load camera calibration " << calib_path
+      std::cout << "could not load camera calibration " << calib_path
                 << std::endl;
       std::abort();
     }
@@ -1169,6 +1169,8 @@ void update_optimized_variables() {
   calib_cam = calib_cam_opt;
   cov_graph = cov_graph_opt;
   kf_frames = kf_frames_opt;
+  image_projections = image_projections_opt;
+  prev_lm_ids = prev_lm_ids_opt;
 
   opt_finished = false;
 }
@@ -1188,7 +1190,7 @@ void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
 }
 bool next_step() {
   auto start = std::chrono::high_resolution_clock::now();
-  std::cerr << "\n\nFRAME " << current_frame << std::endl;
+  std::cout << "\n\nFRAME " << current_frame << std::endl;
   std::cout << "Num keyframes: " << kf_frames.size() << std::endl;
   std::cout << "Num landmarks: " << landmarks.size() << std::endl;
 
@@ -1201,13 +1203,10 @@ bool next_step() {
     update_optimized_variables();
   }
 
-  if (!loop_closure_running && loop_closure_finished) {
-    lc_thread->join();
-    loop_closure_finished = false;
-    if (loop_closure_candidate != -1) {
-      std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
-      return false;  // don't continue next
-    }
+  if (loop_closure_candidate != -1) {
+    std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
+    loop_closure_candidate = -1;
+    return false;  // don't continue next
   }
   // only stop once all threads have joined
   if (current_frame >= int(groundtruths.size())) return false;
@@ -1262,10 +1261,12 @@ bool next_step() {
   }
 
   bool mapping_busy = opt_running || opt_finished;
-  make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
-                         frames_since_last_kf, new_kf_min_inliers, min_kfs,
-                         min_weight_k1, max_kref_overlap, mapping_busy,
-                         md_local, kf_frames);
+  old_make_keyframe_decision(take_keyframe, mapping_busy, new_kf_min_inliers,
+                             md_local);
+  // make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
+  //                       frames_since_last_kf, new_kf_min_inliers, min_kfs,
+  //                       min_weight_k1, max_kref_overlap, mapping_busy,
+  //                       md_local, kf_frames);
 
   auto end_tracking = std::chrono::high_resolution_clock::now();
   time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1277,6 +1278,7 @@ bool next_step() {
   /*MAPPING*/
   if (take_keyframe) {
     frames_since_last_kf = 0;
+    loop_closure_frame = tcidl.first;
     std::cout << "Adding as keyframe..." << std::endl;
 
     // Stereo feature matching
@@ -1311,15 +1313,8 @@ bool next_step() {
     add_new_keyframe(tcidl.first, prev_lm_ids, min_weight, kf_frames,
                      cov_graph);
 
-    // Remove redundant keyframes + associated points
-    // remove_redundant_keyframes(cameras, landmarks, kf_frames, cov_graph,
-    //                           tcidl.first, min_kfs, max_redundant_obs_count);
-    // Local Bundle Adjustment
-    get_cov_map(tcidl.first, kf_frames, cov_graph, local_lms, cov_frames);
+    // Loop Closure + Local Bundle Adjustment + Remove Keyframes
     optimize();
-    if (!loop_closure_running && !loop_closure_finished) {
-      detect_loop_closure(tcidl.first);
-    }
     auto end = std::chrono::high_resolution_clock::now();
     time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
                       end - end_tracking)
@@ -1375,7 +1370,7 @@ bool next_step() {
 
 // Compute reprojections for all landmark observations for visualization and
 // outlier removal.
-void compute_projections() {
+void compute_projections(ImageProjections& image_projections) {
   auto start = std::chrono::high_resolution_clock::now();
   image_projections.clear();
 
@@ -1432,30 +1427,26 @@ void compute_projections() {
             << std::setprecision(9) << " sec" << std::endl;
 }
 
-void detect_loop_closure(const FrameId& new_kf) {
+void detect_loop_closure() {
   std::cout << "Detecting loop closure..." << std::endl;
   loop_closure_running = true;
-  loop_closure_frame = new_kf;
-  lc_thread.reset(new std::thread([=] {  // pass by copy
-    Keyframes kf_frames_copy = kf_frames;
-    Cameras cameras_copy = cameras;
-    Landmarks landmarks_copy = landmarks;
-    CovisibilityGraph cov_graph_copy = cov_graph;
-    Corners feature_corners_copy = feature_corners;
-    TimeCamId tcidl(new_kf, 0);
-    Sophus::SE3d pose = cameras_copy.at(tcidl).T_w_c;
-    Connections neighbors = cov_graph_copy.at(loop_closure_frame);
+  // landmarks_lc = landmarks;
+  // cov_graph_lc = cov_graph;
+  lc_thread.reset(new std::thread([&] {
+    TimeCamId tcidl(loop_closure_frame, 0);
+    Sophus::SE3d pose = cameras.at(tcidl).T_w_c;
+    Connections neighbors = cov_graph.at(loop_closure_frame);
     double max_diff = get_max_pose_difference(
-        pose, cameras_copy, neighbors);  // from keyframes connected in covgraph
+        pose, cameras, neighbors);  // from keyframes connected in covgraph
     loop_closure_candidates = get_loop_closure_candidates(
-        loop_closure_frame, pose, cameras_copy, neighbors, kf_frames, max_diff);
+        loop_closure_frame, pose, cameras, neighbors, kf_frames, max_diff);
     LandmarkMatchData lmmd;
     loop_closure_candidate =
-        perform_matching(kf_frames_copy, loop_closure_candidates, tcidl,
-                         feature_corners_copy, landmarks_copy, os_opts, lmmd);
+        perform_matching(kf_frames, loop_closure_candidates, tcidl,
+                         feature_corners, landmarks, os_opts, lmmd);
     if (loop_closure_candidate != -1) {
-      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_copy,
-                      kf_frames_copy, landmarks_copy);
+      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph,
+                      kf_frames, landmarks, prev_lm_ids);
     }
     std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
     loop_closure_running = false;
@@ -1468,7 +1459,7 @@ void detect_loop_closure(const FrameId& new_kf) {
 void optimize() {
   auto start = std::chrono::high_resolution_clock::now();
 
-  std::cerr << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
+  std::cout << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
             << local_lms.size() << " points." << std::endl;
 
   // Fix oldest two cameras to fix SE3 and scale gauge. Making the whole second
@@ -1488,21 +1479,46 @@ void optimize() {
   landmarks_opt = landmarks;
   kf_frames_opt = kf_frames;
   cov_graph_opt = cov_graph;
+  image_projections_opt = image_projections;
+  prev_lm_ids_opt = prev_lm_ids;
 
   opt_running = true;
 
   opt_thread.reset(new std::thread([ba_options] {
+    TimeCamId tcidl(loop_closure_frame, 0);
+    Sophus::SE3d pose = cameras_opt.at(tcidl).T_w_c;
+    Connections neighbors = cov_graph_opt.at(loop_closure_frame);
+    double max_diff = get_max_pose_difference(
+        pose, cameras_opt, neighbors);  // from keyframes connected in covgraph
+    loop_closure_candidates =
+        get_loop_closure_candidates(loop_closure_frame, pose, cameras_opt,
+                                    neighbors, kf_frames_opt, max_diff);
+    LandmarkMatchData lmmd;
+    loop_closure_candidate =
+        perform_matching(kf_frames_opt, loop_closure_candidates, tcidl,
+                         feature_corners, landmarks_opt, os_opts, lmmd);
+    if (loop_closure_candidate != -1) {
+      std::cout << "MERGING " << lmmd.matches.size() << " LANDMARKS"
+                << std::endl;
+      std::cout << "SIZE BEFORE: " << landmarks_opt.size() << std::endl;
+      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_opt,
+                      kf_frames_opt, landmarks_opt, prev_lm_ids_opt);
+      std::cout << "SIZE AFTER: " << landmarks_opt.size() << std::endl;
+    }
     std::set<TimeCamId> cov_cameras;
     for (auto& kf : cov_frames) {
       cov_cameras.emplace(kf, 0);
       cov_cameras.emplace(kf, 1);
     }
+    get_cov_map(loop_closure_frame, kf_frames_opt, cov_graph_opt, local_lms,
+                cov_frames);
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);
 
     remove_redundant_keyframes(cameras_opt, landmarks_opt, kf_frames_opt,
-                               cov_graph_opt, min_kfs, max_redundant_obs_count);
-    compute_projections();
+                               cov_graph_opt, cov_frames, min_kfs,
+                               max_redundant_obs_count);
+    compute_projections(image_projections_opt);
     opt_finished = true;
     opt_running = false;
   }));

@@ -198,7 +198,6 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
 
   auto start = std::chrono::high_resolution_clock::now();
   if (md.matches.size() < 3) {
-    T_w_c = Sophus::SE3d();
     return;
   }
 
@@ -401,7 +400,7 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& landmarks) {
     }
     // remove landmarks with no more observations
     if (it->second.obs.size() == 0) {
-      it = landmarks.erase(it);
+      it = landmarks.unsafe_erase(it);
     } else {
       ++it;
     }
@@ -419,17 +418,15 @@ double get_max_pose_difference(const Sophus::SE3d& ref_pose,
                                const Connections& neighbors) {
   // TODO: remove magic number
   double max_diff = 0;
-  std::cout << "\n\n\nFINDING MAX DIFF of neighbors" << std::endl;
   for (auto& neighbor : neighbors) {
     TimeCamId tcidl(neighbor.first, 0);
+    std::cout << "Getting camera " << tcidl << std::endl;
     Sophus::SE3d other_pose = cameras.at(tcidl).T_w_c;
     double diff = calculate_absolute_pose_error(ref_pose, other_pose);
-    std::cout << "DIFF IS: " << diff << std::endl;
     if (diff > max_diff) {
       max_diff = diff;
     }
   }
-  std::cout << "MAX DIFF IS " << max_diff << std::endl;
   return max_diff;
 }
 std::set<FrameId> get_loop_closure_candidates(const FrameId& new_kf,
@@ -439,14 +436,12 @@ std::set<FrameId> get_loop_closure_candidates(const FrameId& new_kf,
                                               const Keyframes& kf_frames,
                                               const double& max_diff) {
   std::set<FrameId> candidates;
-  std::cout << "\n\nFINDING CANDIDATES" << std::endl;
   for (auto& kf : kf_frames) {
     if (neighbors.find(kf.first) != neighbors.end() || kf.first == new_kf)
       continue;
     TimeCamId other_tcidl(kf.first, 0);
     Sophus::SE3d other_pose = cameras.at(other_tcidl).T_w_c;
     double diff = calculate_absolute_pose_error(pose, other_pose);
-    std::cout << "DIFF IS " << diff << std::endl;
     if (diff <= max_diff) {
       candidates.emplace(kf.first);
     }
@@ -485,6 +480,7 @@ LandmarkMatchData get_landmark_correspondences(const TimeCamId& tcid0,
     TrackId tid1 =
         get_corresponding_landmark(tcid1, kf_frames, landmarks, fid1);
     if (tid1 == -1) continue;
+    if (tid0 == tid1) continue;
     lmmd.matches.emplace_back(tid0, tid1);
   }
   return lmmd;
@@ -554,20 +550,26 @@ FrameId perform_matching(const Keyframes& kf_frames,
         tcid_new, tcid_candidate, md_features, kf_frames, landmarks);
     std::cout << "Num matches that are landmarks: " << lmmd.matches.size()
               << std::endl;
-    std::vector<int> inliers;
-    Sophus::SE3d sim_transform;
-    compute_similarity_transform(
-        lmmd, landmarks, opts.reprojection_error_pnp_inlier_threshold_pixel,
-        sim_transform, inliers);
-    std::cout << "NUM INLIERS: " << inliers.size() << std::endl;
-    if (int(inliers.size()) >= opts.min_inliers_loop_closing &&
-        int(inliers.size()) > num_best_inliers) {
+    if (int(local_lmmd.matches.size()) >= opts.min_inliers_loop_closing &&
+        int(local_lmmd.matches.size()) > num_best_inliers) {
       final_candidate = candidate;
-      num_best_inliers = inliers.size();
-      // for (auto& inlier : inliers) {
-      //  lmmd.matches.push_back(local_lmmd.matches.at(inlier));
-      //}
+      num_best_inliers = local_lmmd.matches.size();
+      lmmd.matches = local_lmmd.matches;
     }
+    // std::vector<int> inliers;
+    // Sophus::SE3d sim_transform;
+    // compute_similarity_transform(
+    //    lmmd, landmarks, opts.reprojection_error_pnp_inlier_threshold_pixel,
+    //    sim_transform, inliers);
+    // std::cout << "NUM INLIERS: " << inliers.size() << std::endl;
+    // if (int(inliers.size()) >= opts.min_inliers_loop_closing &&
+    //    int(inliers.size()) > num_best_inliers) {
+    //  final_candidate = candidate;
+    //  num_best_inliers = inliers.size();
+    //  for (auto& inlier : inliers) {
+    //    lmmd.matches.push_back(local_lmmd.matches.at(inlier));
+    //  }
+    //}
   }
   return final_candidate;
 }
@@ -638,6 +640,12 @@ void get_local_map(const MatchData& md_prev, const Landmarks& landmarks,
   get_landmark_subset(landmarks, local_lm_ids, local_landmarks);
 }
 
+void old_make_keyframe_decision(bool& take_keyframe, const bool mapping_busy,
+                                const int new_kf_min_inliers,
+                                const MatchData& md) {
+  take_keyframe = !mapping_busy && int(md.matches.size()) < new_kf_min_inliers;
+  return;
+}
 void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
                             const int max_frames_since_last_kf,
                             const int frames_since_last_kf,
@@ -646,9 +654,10 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
                             const double max_kref_overlap,
                             const bool mapping_busy, const MatchData& md,
                             const Keyframes& kf_frames) {
-  if (kf_frames.size() < (uint)min_kfs ||
+  if (int(kf_frames.size()) < min_kfs ||
       frames_since_last_kf > max_frames_since_last_kf) {
     take_keyframe = !mapping_busy;
+    std::cout << "Mapping busy: " << !take_keyframe << std::endl;
     return;
   }
 
@@ -680,6 +689,8 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
 void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
                       const int min_weight, CovisibilityGraph& cov_graph) {
   Connections connections;
+  std::cout << "Size: " << kf_frames.size() << std::endl;
+  std::cout << "Getting landmarks at " << new_kf << std::endl;
   LandmarkIds new_lms = kf_frames.at(new_kf);
   auto start = std::chrono::high_resolution_clock::now();
   double time_taken;
@@ -696,10 +707,10 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
 
     if (curr_weight >= min_weight) {
       connections.emplace(kf, curr_weight);
-      node.second.emplace(new_kf, curr_weight);
+      node.second[new_kf] = curr_weight;
     }
   }
-  cov_graph.emplace(new_kf, connections);
+  cov_graph[new_kf] = connections;
   auto end = std::chrono::high_resolution_clock::now();
   time_taken =
       (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
@@ -735,55 +746,54 @@ void remove_from_cov_graph(const FrameId& old_kf,
 
 void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
                      const int min_weight, CovisibilityGraph& cov_graph,
-                     Keyframes& kf_frames, Landmarks& landmarks) {
-  std::cout << "Getting neighbors...." << std::endl;
+                     Keyframes& kf_frames, Landmarks& landmarks,
+                     std::set<FrameId> prev_lm_ids) {
   auto& neighbors = cov_graph.at(kf);
-  std::cout << "GOT IT" << std::endl;
-  neighbors.emplace(kf, 0);  // weight doesn't matter
+  neighbors.emplace(kf, 0);  // 0 b/c weight doesn't matter
   // iterate over all kf currently selected in covisibility graph
   for (auto& neighbor : neighbors) {
-    std::cout << "Neighbor : " << neighbor.first << std::endl;
     // iterate through all landmark pairs (first is the landmark to be merged
     // into second)
+    LandmarkIds& lms = kf_frames.at(neighbor.first);
     for (auto& lm_pair : lmmd.matches) {
-      std::cout << "Checking landmark pair " << lm_pair.first << ", "
-                << lm_pair.second << std::endl;
-      LandmarkIds& lms = kf_frames.at(neighbor.first);
+      // TODO make more efficient
+      if (prev_lm_ids.find(lm_pair.first) != prev_lm_ids.end()) {
+        prev_lm_ids.erase(lm_pair.first);
+        prev_lm_ids.insert(lm_pair.second);
+      }
       if (lms.find(lm_pair.first) != lms.end()) {  // neighbor sees old landmark
-        std::cout << "Neighbor sees landmark" << std::endl;
+        // change observations in kf_frames
         lms.erase(lm_pair.first);
         lms.emplace(lm_pair.second);
         TimeCamId tcidl(neighbor.first, 0),
             tcidr(neighbor.first,
                   1);  // need to check whether left, right or both cams see it
-        std::cout << "Getting observations..." << std::endl;
         FeatureTrack& obs = landmarks.at(lm_pair.first).obs;
         auto obs_left = obs.find(tcidl);
         auto obs_right = obs.find(tcidr);
         // erase old and insert new observations
         if (obs_left != obs.end()) {
-          std::cout << "Merging left..." << std::endl;
           landmarks.at(lm_pair.second).obs.emplace(*obs_left);
           obs.erase(obs_left);
         }
         if (obs_right != obs.end()) {
-          std::cout << "Merging right..." << std::endl;
           landmarks.at(lm_pair.second).obs.emplace(*obs_right);
           obs.erase(obs_right);
         }
         if (obs.size() == 0) {  // remove landmark
-          std::cout << "Removing left" << std::endl;
-          landmarks.erase(lm_pair.first);
+          landmarks.unsafe_erase(lm_pair.first);
         }
       }
     }
-    remove_from_cov_graph(neighbor.first, cov_graph);
+    // works like update if kf already exists
     add_to_cov_graph(neighbor.first, kf_frames, min_weight, cov_graph);
   }
 }
 void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                 Keyframes& kf_frames,
-                                CovisibilityGraph& cov_graph, const int min_kfs,
+                                CovisibilityGraph& cov_graph,
+                                const std::set<FrameId>& cov_frames,
+                                const int min_kfs,
                                 const double max_redundant_obs_count) {
   auto start = std::chrono::high_resolution_clock::now();
   for (auto current_kf = kf_frames.begin(); current_kf != kf_frames.end();) {
@@ -808,9 +818,10 @@ void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
     double overlap_percentage =
         (double)overlap_count / (double)current_landmarks.size();
     if (overlap_percentage >= max_redundant_obs_count) {
+      std::cout << "REMOVING KF: " << current_kf->first << std::endl;
       remove_kf(current_kf->first, cameras, landmarks);
-      remove_from_cov_graph((*current_kf).first, cov_graph);
-      current_kf = kf_frames.erase(current_kf);
+      remove_from_cov_graph(current_kf->first, cov_graph);
+      current_kf = kf_frames.unsafe_erase(current_kf);
     } else {
       current_kf++;
     }

@@ -126,7 +126,7 @@ using CovisibilityGraph = std::unordered_map<FrameId, Connections>;
 
 // each keyframe has an associated vector of landmark ids
 using LandmarkIds = std::set<TrackId>;
-using Keyframes = std::unordered_map<FrameId, LandmarkIds>;
+using Keyframes = tbb::concurrent_unordered_map<FrameId, LandmarkIds>;
 
 struct OrbSLAMOptions {
   int num_features_per_image;
@@ -177,7 +177,7 @@ using Cameras =
 
 /// collection {trackId => Landmark} for all landmarks in the map.
 /// trackIds correspond to feature_tracks
-using Landmarks = std::unordered_map<TrackId, Landmark>;
+using Landmarks = tbb::concurrent_unordered_map<TrackId, Landmark>;
 
 /// camera candidate to be added to map
 struct CameraCandidate {
