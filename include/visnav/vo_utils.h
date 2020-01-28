@@ -309,7 +309,7 @@ void remove_old_keyframes(const TimeCamId tcidl, const int max_num_kfs,
       // move landmarks with no more observations to old_landmarks
       if (it->second.obs.size() == 0) {
         old_landmarks.insert(*it);
-        it = landmarks.erase(it);
+        it = landmarks.unsafe_erase(it);
       } else {
         ++it;
       }

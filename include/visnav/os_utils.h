@@ -197,7 +197,7 @@ void localize_camera(const std::shared_ptr<AbstractCamera<double>>& cam,
   inliers.clear();
 
   auto start = std::chrono::high_resolution_clock::now();
-  if (md.matches.size() < 3) {
+  if (md.matches.size() < 4) {
     return;
   }
 
@@ -308,6 +308,7 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
                        const Sophus::SE3d& T_w_c0, const Calibration& calib_cam,
                        const std::vector<int> inliers,
                        const MatchData& md_stereo, const MatchData& md,
+                       const double d_min, const double d_max,
                        Landmarks& landmarks, std::set<TrackId>& lm_ids,
                        TrackId& next_landmark_id) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -363,12 +364,14 @@ void add_new_landmarks(const TimeCamId tcidl, const TimeCamId tcidr,
 
     Eigen::Vector3d p3d0_tri = opengv::triangulation::triangulate(adapter, 0);
     Eigen::Vector3d p3d_world = T_w_c0 * p3d0_tri;
-    Landmark new_landmark;
-    new_landmark.p = p3d_world;
-    new_landmark.obs.emplace(tcidl, stereo_match.first);
-    new_landmark.obs.emplace(tcidr, stereo_match.second);
-    landmarks.emplace(next_landmark_id, new_landmark);
-    lm_ids.emplace(next_landmark_id++);
+    if (p3d_world.norm() >= d_min && p3d_world.norm() <= d_max) {
+      Landmark new_landmark;
+      new_landmark.p = p3d_world;
+      new_landmark.obs.emplace(tcidl, stereo_match.first);
+      new_landmark.obs.emplace(tcidr, stereo_match.second);
+      landmarks.emplace(next_landmark_id, new_landmark);
+      lm_ids.emplace(next_landmark_id++);
+    }
   }
   auto end = std::chrono::high_resolution_clock::now();
   double time_taken =
@@ -546,28 +549,30 @@ FrameId perform_matching(const Keyframes& kf_frames,
     std::cout << "Num matches: " << md_features.matches.size() << std::endl;
     LandmarkMatchData local_lmmd = get_landmark_correspondences(
         tcid_new, tcid_candidate, md_features, kf_frames, landmarks);
-    std::cout << "Num matches that are landmarks: " << lmmd.matches.size()
+    std::cout << "Num matches that are landmarks: " << local_lmmd.matches.size()
               << std::endl;
-    if (int(local_lmmd.matches.size()) >= opts.min_inliers_loop_closing &&
-        int(local_lmmd.matches.size()) > num_best_inliers) {
-      final_candidate = candidate;
-      num_best_inliers = local_lmmd.matches.size();
-      lmmd.matches = local_lmmd.matches;
-    }
     // std::vector<int> inliers;
     // Sophus::SE3d sim_transform;
     // compute_similarity_transform(
-    //    lmmd, landmarks, opts.reprojection_error_pnp_inlier_threshold_pixel,
-    //    sim_transform, inliers);
+    //    local_lmmd, landmarks,
+    //    opts.reprojection_error_pnp_inlier_threshold_pixel, sim_transform,
+    //    inliers);
     // std::cout << "NUM INLIERS: " << inliers.size() << std::endl;
     // if (int(inliers.size()) >= opts.min_inliers_loop_closing &&
     //    int(inliers.size()) > num_best_inliers) {
+    //  lmmd.matches.clear();
     //  final_candidate = candidate;
     //  num_best_inliers = inliers.size();
     //  for (auto& inlier : inliers) {
     //    lmmd.matches.push_back(local_lmmd.matches.at(inlier));
     //  }
     //}
+    if (int(local_lmmd.matches.size()) >= opts.min_inliers_loop_closing &&
+        int(local_lmmd.matches.size()) > num_best_inliers) {
+      final_candidate = candidate;
+      num_best_inliers = local_lmmd.matches.size();
+      lmmd.matches = local_lmmd.matches;
+    }
   }
   return final_candidate;
 }
@@ -745,8 +750,9 @@ void remove_from_cov_graph(const FrameId& old_kf,
 void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
                      const int min_weight, CovisibilityGraph& cov_graph,
                      Keyframes& kf_frames, Landmarks& landmarks,
-                     std::set<FrameId> prev_lm_ids) {
-  auto& neighbors = cov_graph.at(kf);
+                     std::set<FrameId> prev_lm_ids, Landmarks& old_landmarks) {
+  old_landmarks.clear();
+  auto neighbors = cov_graph.at(kf);
   neighbors.emplace(kf, 0);  // 0 b/c weight doesn't matter
   // iterate over all kf currently selected in covisibility graph
   for (auto& neighbor : neighbors) {
@@ -767,6 +773,7 @@ void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
             tcidr(neighbor.first,
                   1);  // need to check whether left, right or both cams see it
         FeatureTrack& obs = landmarks.at(lm_pair.first).obs;
+        old_landmarks.emplace(*landmarks.find(lm_pair.first));
         auto obs_left = obs.find(tcidl);
         auto obs_right = obs.find(tcidr);
         // erase old and insert new observations

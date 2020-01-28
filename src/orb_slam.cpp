@@ -163,6 +163,10 @@ Cameras cameras_opt;
 
 /// landmark positions and feature observations in current map
 Landmarks landmarks;
+Landmarks old_landmarks;
+
+LandmarkIds merged_lms;
+LandmarkMatchData merged_lmmd;
 
 /// copy of landmarks for optimization in parallel thread
 Landmarks landmarks_opt;
@@ -203,7 +207,7 @@ pangolin::Var<bool> show_ids("ui.show_ids", false, false, true);
 pangolin::Var<bool> show_epipolar("hidden.show_epipolar", false, false, true);
 pangolin::Var<bool> show_path("hidden.show_path", false, false, true);
 pangolin::Var<bool> show_cameras3d("hidden.show_cameras", true, false, true);
-pangolin::Var<bool> show_vo_cam("ui.show_vo_cam", true, false, true);
+pangolin::Var<bool> show_vo_cam("ui.show_vo_cam", false, false, true);
 pangolin::Var<bool> show_vo_path("hidden.show_vo_path", false, false, true);
 pangolin::Var<bool> show_gt_cam("ui.show_groundtruth", true, false, true);
 pangolin::Var<bool> show_gt_path("hidden.show_gt_path", false, false, true);
@@ -224,6 +228,7 @@ pangolin::Var<double> feature_match_test_next_best("hidden.match_next_best",
 pangolin::Var<double> match_max_dist_2d("hidden.match_max_dist_2d", 20.0, 1.0,
                                         50);
 
+pangolin::Var<double> max_pose_diff("ui.max_pose_diff", 2, 0.1, 10);
 pangolin::Var<int> min_kfs("hidden.min_kfs", 5, 1, 20);
 pangolin::Var<double> max_redundant_obs_count("hidden.max_redundant_obs_count",
                                               0.5, 0.1, 1.0);
@@ -243,7 +248,7 @@ pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 100, 30,
                                         150);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
-pangolin::Var<double> d_max("hidden.d_max", 5.0, 1.0, 10.0);
+pangolin::Var<double> d_max("hidden.d_max", 10.0, 1.0, 20.0);
 
 //////////////////////////////////////////////
 /// Adding cameras and landmarks options
@@ -756,12 +761,23 @@ void draw_scene() {
     Cameras cameras_copy = cameras;
     for (auto& node : cov_copy) {
       FrameId kf = node.first;
-      Eigen::Vector3d node_position =
-          cameras_copy.at(TimeCamId(kf, 0)).T_w_c.translation();
+      Eigen::Vector3d node_position;
+      try {
+        node_position = cameras_copy.at(TimeCamId(kf, 0)).T_w_c.translation();
+      } catch (std::out_of_range& e) {
+        std::cerr << e.what() << std::endl;
+        continue;
+      }
       Connections neighbors = node.second;
       for (auto& neighbor : neighbors) {
-        Eigen::Vector3d neighbor_position =
-            cameras_copy.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
+        Eigen::Vector3d neighbor_position;
+        try {
+          neighbor_position =
+              cameras_copy.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
+        } catch (std::out_of_range& e) {
+          std::cerr << e.what() << std::endl;
+          continue;
+        }
         if (neighbor.second > min_weight_essential) {
           glColor3ubv(color_outlier_observation);  // essential
         } else {
@@ -831,7 +847,7 @@ void draw_scene() {
     glBegin(GL_POINTS);
     for (auto it = vo_poses.begin();
          it <= vo_poses.begin() + current_frame && it != vo_poses.end(); it++) {
-      Eigen::Vector3d path_point = (*it).translation();
+      Eigen::Vector3d path_point = it->translation();
       pangolin::glVertex(path_point);
     }
     glEnd();
@@ -872,7 +888,9 @@ void draw_scene() {
       const bool outlier_in_cam_1 = kv_lm.second.outlier_obs.count(tcid1) > 0;
       const bool outlier_in_cam_2 = kv_lm.second.outlier_obs.count(tcid2) > 0;
 
-      if (in_cam_1 && in_cam_2) {
+      if (merged_lms.find(kv_lm.first) != merged_lms.end()) {
+        glColor3ubv(color_current_kf);
+      } else if (in_cam_1 && in_cam_2) {
         glColor3ubv(color_selected_both);
       } else if (in_cam_1) {
         glColor3ubv(color_selected_left);
@@ -887,6 +905,28 @@ void draw_scene() {
       pangolin::glVertex(kv_lm.second.p);
     }
     glEnd();
+    auto old_landmarks_copy = old_landmarks;
+    auto landmarks_copy = landmarks;
+    for (auto& match : merged_lmmd.matches) {
+      bool old_lm_exists = old_landmarks_copy.count(match.first) > 0;
+      bool kept_lm_exists = landmarks_copy.count(match.second) > 0;
+      if (old_lm_exists && kept_lm_exists) {
+        auto old_lm = old_landmarks_copy.at(match.first).p;
+        auto kept_lm = landmarks_copy.at(match.second).p;
+        glColor3ubv(color_selected_left);
+        glPointSize(3.0);
+        glBegin(GL_POINTS);
+        pangolin::glVertex(old_lm);
+        glColor3ubv(color_selected_right);
+        pangolin::glVertex(kept_lm);
+        glEnd();
+        glLineWidth(1.0);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        pangolin::glDrawLine(old_lm[0], old_lm[1], old_lm[2], kept_lm[0],
+                             kept_lm[1], kept_lm[2]);
+      }
+    }
   }
 }
 void append_pose_to_stream(const size_t& i, const Sophus::SE3d& pose,
@@ -1218,8 +1258,9 @@ bool next_step() {
   MatchData md_prev;
   std::vector<int> inliers;
   get_landmark_subset(landmarks, prev_lm_ids, prev_landmarks);
+  Sophus::SE3d T_w_c = current_pose;
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
-                         prev_landmarks, inliers, current_pose, md_prev);
+                         prev_landmarks, inliers, T_w_c, md_prev);
 
   std::cout << "Found " << md_prev.matches.size()
             << " matches with previous frame." << std::endl;
@@ -1231,20 +1272,26 @@ bool next_step() {
                 local_landmarks);
 
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
-                         local_landmarks, inliers, current_pose, md_local);
+                         local_landmarks, inliers, T_w_c, md_local);
 
   std::cout << "Found " << md_local.matches.size() << " matches with local map."
             << std::endl;
 
-  // keep track of match local landmarks for this frame
-  prev_lm_ids.clear();
-  for (auto& match : md_local.matches) {
-    prev_lm_ids.emplace(match.second);
+  if (calculate_absolute_pose_error(T_w_c, current_pose) <= max_pose_diff) {
+    current_pose = T_w_c;
+    // keep track of match local landmarks for this frame
+    prev_lm_ids.clear();
+    for (auto& match : md_local.matches) {
+      prev_lm_ids.emplace(match.second);
+    }
+    bool mapping_busy = opt_running || opt_finished;
+    old_make_keyframe_decision(take_keyframe, mapping_busy, new_kf_min_inliers,
+                               md_local);
+  } else {
+    std::cout << "Pose difference is too large..." << std::endl;
+    take_keyframe = false;
   }
 
-  bool mapping_busy = opt_running || opt_finished;
-  old_make_keyframe_decision(take_keyframe, mapping_busy, new_kf_min_inliers,
-                             md_local);
   // make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
   //                       frames_since_last_kf, new_kf_min_inliers, min_kfs,
   //                       min_weight_k1, max_kref_overlap, mapping_busy,
@@ -1289,7 +1336,7 @@ bool next_step() {
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
     add_new_landmarks(tcidl, tcidr, kdl, kdr, current_pose, calib_cam, inliers,
-                      md_stereo, md_local, landmarks, prev_lm_ids,
+                      md_stereo, md_local, d_min, d_max, landmarks, prev_lm_ids,
                       next_landmark_id);
 
     add_new_keyframe(tcidl.first, prev_lm_ids, min_weight, kf_frames,
@@ -1409,33 +1456,33 @@ void compute_projections(ImageProjections& image_projections) {
             << std::setprecision(9) << " sec" << std::endl;
 }
 
-void detect_loop_closure() {
-  std::cout << "Detecting loop closure..." << std::endl;
-  loop_closure_running = true;
-  // landmarks_lc = landmarks;
-  // cov_graph_lc = cov_graph;
-  lc_thread.reset(new std::thread([&] {
-    TimeCamId tcidl(loop_closure_frame, 0);
-    Sophus::SE3d pose = cameras.at(tcidl).T_w_c;
-    Connections neighbors = cov_graph.at(loop_closure_frame);
-    double max_diff = get_max_pose_difference(
-        pose, cameras, neighbors);  // from keyframes connected in covgraph
-    loop_closure_candidates = get_loop_closure_candidates(
-        loop_closure_frame, pose, cameras, neighbors, kf_frames, max_diff);
-    LandmarkMatchData lmmd;
-    loop_closure_candidate =
-        perform_matching(kf_frames, loop_closure_candidates, tcidl,
-                         feature_corners, landmarks, os_opts, lmmd);
-    if (loop_closure_candidate != -1) {
-      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph,
-                      kf_frames, landmarks, prev_lm_ids);
-    }
-    std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
-    loop_closure_running = false;
-    loop_closure_finished = true;
-    std::cout << "Loop closure detection finished." << std::endl;
-  }));
-}
+// void detect_loop_closure() {
+//  std::cout << "Detecting loop closure..." << std::endl;
+//  loop_closure_running = true;
+//  // landmarks_lc = landmarks;
+//  // cov_graph_lc = cov_graph;
+//  lc_thread.reset(new std::thread([&] {
+//    TimeCamId tcidl(loop_closure_frame, 0);
+//    Sophus::SE3d pose = cameras.at(tcidl).T_w_c;
+//    Connections neighbors = cov_graph.at(loop_closure_frame);
+//    double max_diff = get_max_pose_difference(
+//        pose, cameras, neighbors);  // from keyframes connected in covgraph
+//    loop_closure_candidates = get_loop_closure_candidates(
+//        loop_closure_frame, pose, cameras, neighbors, kf_frames, max_diff);
+//    LandmarkMatchData lmmd;
+//    loop_closure_candidate =
+//        perform_matching(kf_frames, loop_closure_candidates, tcidl,
+//                         feature_corners, landmarks, os_opts, lmmd);
+//    if (loop_closure_candidate != -1) {
+//      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph,
+//                      kf_frames, landmarks, prev_lm_ids, old_landmarks);
+//    }
+//    std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
+//    loop_closure_running = false;
+//    loop_closure_finished = true;
+//    std::cout << "Loop closure detection finished." << std::endl;
+//  }));
+//}
 
 // Optimize local map
 void optimize() {
@@ -1483,8 +1530,14 @@ void optimize() {
       std::cout << "MERGING " << lmmd.matches.size() << " LANDMARKS"
                 << std::endl;
       std::cout << "SIZE BEFORE: " << landmarks_opt.size() << std::endl;
+      merged_lms.clear();
+      for (auto& match : lmmd.matches) {
+        merged_lms.emplace(match.second);
+      }
+      merged_lmmd = lmmd;
       merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_opt,
-                      kf_frames_opt, landmarks_opt, prev_lm_ids_opt);
+                      kf_frames_opt, landmarks_opt, prev_lm_ids_opt,
+                      old_landmarks);
       std::cout << "SIZE AFTER: " << landmarks_opt.size() << std::endl;
     }
     std::set<TimeCamId> cov_cameras;
