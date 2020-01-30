@@ -423,7 +423,6 @@ double get_max_pose_difference(const Sophus::SE3d& ref_pose,
   double max_diff = 0;
   for (auto& neighbor : neighbors) {
     TimeCamId tcidl(neighbor.first, 0);
-    std::cout << "Getting camera " << tcidl << std::endl;
     Sophus::SE3d other_pose = cameras.at(tcidl).T_w_c;
     double diff = calculate_absolute_pose_error(ref_pose, other_pose);
     if (diff > max_diff) {
@@ -690,8 +689,12 @@ void make_keyframe_decision(bool& take_keyframe, const Landmarks& landmarks,
   take_keyframe = cond3;
 }
 void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
-                      const int min_weight, CovisibilityGraph& cov_graph) {
+                      const Cameras& cameras, const int min_weight,
+                      RelativeTransforms& relative_transforms,
+                      CovisibilityGraph& cov_graph) {
   Connections connections;
+  TimeCamId tcid(new_kf, 0);
+  Sophus::SE3d T_w_cnew = cameras.at(tcid).T_w_c;
   std::cout << "Size: " << kf_frames.size() << std::endl;
   std::cout << "Getting landmarks at " << new_kf << std::endl;
   LandmarkIds new_lms = kf_frames.at(new_kf);
@@ -701,6 +704,7 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
     FrameId kf = node.first;
     if (kf == new_kf) continue;
     LandmarkIds curr_lms = kf_frames.at(kf);
+    TimeCamId tcid_curr(kf, 0);
     int curr_weight = 0;
     for (const TrackId& trackid : curr_lms) {
       if (new_lms.find(trackid) != new_lms.end()) {
@@ -709,7 +713,12 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
     }
 
     if (curr_weight >= min_weight) {
+      Sophus::SE3d T_w_curr = cameras.at(tcid_curr).T_w_c;
+      Sophus::SE3d T_curr_new = T_w_curr.inverse() * T_w_cnew;
       connections.emplace(kf, curr_weight);
+      relative_transforms.emplace(std::make_pair(new_kf, kf), T_curr_new);
+      relative_transforms.emplace(std::make_pair(kf, new_kf),
+                                  T_curr_new.inverse());
       node.second[new_kf] = curr_weight;
     }
   }
@@ -723,11 +732,13 @@ void add_to_cov_graph(const FrameId& new_kf, const Keyframes& kf_frames,
             << std::setprecision(9) << " sec" << std::endl;
 }
 void add_new_keyframe(const FrameId& new_kf, const std::set<TrackId>& lm_ids,
-                      const int min_weight, Keyframes& kf_frames,
-                      CovisibilityGraph& cov_graph) {
+                      const Cameras& cameras, const int min_weight,
+                      RelativeTransforms& relative_transforms,
+                      Keyframes& kf_frames, CovisibilityGraph& cov_graph) {
   auto start = std::chrono::high_resolution_clock::now();
   kf_frames.emplace(new_kf, lm_ids);
-  add_to_cov_graph(new_kf, kf_frames, min_weight, cov_graph);
+  add_to_cov_graph(new_kf, kf_frames, cameras, min_weight, relative_transforms,
+                   cov_graph);
   auto end = std::chrono::high_resolution_clock::now();
   double time_taken =
       (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
@@ -748,9 +759,11 @@ void remove_from_cov_graph(const FrameId& old_kf,
 }
 
 void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
-                     const int min_weight, CovisibilityGraph& cov_graph,
-                     Keyframes& kf_frames, Landmarks& landmarks,
-                     std::set<FrameId> prev_lm_ids, Landmarks& old_landmarks) {
+                     const Cameras& cameras, const int min_weight,
+                     RelativeTransforms& relative_transforms,
+                     CovisibilityGraph& cov_graph, Keyframes& kf_frames,
+                     Landmarks& landmarks, std::set<FrameId> prev_lm_ids,
+                     Landmarks& old_landmarks) {
   old_landmarks.clear();
   auto neighbors = cov_graph.at(kf);
   neighbors.emplace(kf, 0);  // 0 b/c weight doesn't matter
@@ -791,13 +804,14 @@ void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
       }
     }
     // works like update if kf already exists
-    add_to_cov_graph(neighbor.first, kf_frames, min_weight, cov_graph);
+    add_to_cov_graph(neighbor.first, kf_frames, cameras, min_weight,
+                     relative_transforms, cov_graph);
   }
 }
 void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
                                 Keyframes& kf_frames,
                                 CovisibilityGraph& cov_graph,
-                                const std::set<FrameId>& cov_frames,
+                                std::set<FrameId>& cov_frames,
                                 const int min_kfs,
                                 const double max_redundant_obs_count) {
   auto start = std::chrono::high_resolution_clock::now();
@@ -826,6 +840,9 @@ void remove_redundant_keyframes(Cameras& cameras, Landmarks& landmarks,
       std::cout << "REMOVING KF: " << current_kf->first << std::endl;
       remove_kf(current_kf->first, cameras, landmarks);
       remove_from_cov_graph(current_kf->first, cov_graph);
+      if (cov_frames.count(current_kf->first) > 0) {
+        cov_frames.erase(current_kf->first);
+      }
       current_kf = kf_frames.unsafe_erase(current_kf);
     } else {
       current_kf++;

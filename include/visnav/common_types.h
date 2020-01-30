@@ -122,6 +122,15 @@ using FeatureTracks = std::unordered_map<TrackId, FeatureTrack>;
 
 /// covisibility graph
 using Connections = std::unordered_map<FrameId, int>;
+
+// stores transforms between neighbors in cov graph (from frame 1 to frame 2)
+using RelativeTransforms = tbb::concurrent_unordered_map<
+    std::pair<FrameId, FrameId>, Sophus::SE3d,
+    tbb::tbb_hash<std::pair<FrameId, FrameId>>,
+    std::equal_to<std::pair<FrameId, FrameId>>,
+    Eigen::aligned_allocator<
+        std::pair<const std::pair<FrameId, FrameId>, Sophus::SE3d>>>;
+
 using CovisibilityGraph = std::unordered_map<FrameId, Connections>;
 
 // each keyframe has an associated vector of landmark ids

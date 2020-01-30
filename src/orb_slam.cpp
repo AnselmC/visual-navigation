@@ -80,8 +80,9 @@ void load_data(const std::string& path, const std::string& calib_path,
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr);
 void save_poses();
+void clear_loop_closure();
 bool next_step();
-void optimize();
+void optimize(TimeCamId tcidl);
 void detect_loop_closure();
 void compute_projections();
 
@@ -100,7 +101,10 @@ constexpr int NUM_CAMS = 2;
 
 int current_frame = 0;
 Sophus::SE3d current_pose;
+Sophus::SE3d relative_pose;
+Sophus::SE3d prev_kf_pose;
 Sophus::SE3d prev_pose;
+RelativeTransforms relative_transforms;
 bool take_keyframe = true;
 TrackId next_landmark_id = 0;
 int frames_since_last_kf = 0;
@@ -244,7 +248,7 @@ pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
 pangolin::Var<int> min_inliers_loop_closing("hidden.min_inliers_loop_closing",
                                             50, 1, 200);
-pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 100, 30,
+pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 80, 30,
                                         150);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
@@ -277,6 +281,7 @@ using Button = pangolin::Var<std::function<void(void)>>;
 
 Button next_step_btn("ui.next_step", &next_step);
 Button save_poses_btn("ui.save_poses", &save_poses);
+Button clear_loop_closure_btn("ui.clear_loop_closure", &clear_loop_closure);
 std::string pose_path = "save_poses/";
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -728,18 +733,20 @@ void draw_scene() {
   const TimeCamId tcid1 = std::make_pair(show_frame1, show_cam1);
   const TimeCamId tcid2 = std::make_pair(show_frame2, show_cam2);
 
-  const u_int8_t color_visualodometry_left[3]{150, 75, 0};   // brown
-  const u_int8_t color_groundtruth[3]{255, 155, 0};          // orange
-  const u_int8_t color_camera_current[3]{255, 0, 0};         // red
-  const u_int8_t color_camera_left[3]{0, 125, 0};            // dark green
-  const u_int8_t color_camera_right[3]{0, 0, 125};           // dark blue
-  const u_int8_t color_points[3]{255, 255, 255};             // white
-  const u_int8_t color_selected_left[3]{0, 250, 0};          // green
-  const u_int8_t color_selected_right[3]{0, 0, 250};         // blue
-  const u_int8_t color_selected_both[3]{0, 250, 250};        // teal
-  const u_int8_t color_outlier_observation[3]{250, 0, 250};  // purple
-  const u_int8_t color_current_kf[3]{255, 0, 250};           // purple
-  const u_int8_t color_loop_closure_cam[3]{255, 255, 0};     // yellow
+  std::map<std::string, u_int8_t[3]> colors;
+  const u_int8_t color_visualodometry_left[3]{150, 75, 0};      // brown
+  const u_int8_t color_groundtruth[3]{255, 155, 0};             // orange
+  const u_int8_t color_camera_current[3]{255, 0, 0};            // red
+  const u_int8_t color_camera_left[3]{0, 125, 0};               // dark green
+  const u_int8_t color_camera_right[3]{0, 0, 125};              // dark blue
+  const u_int8_t color_points[3]{255, 255, 255};                // white
+  const u_int8_t color_selected_left[3]{0, 250, 0};             // green
+  const u_int8_t color_selected_right[3]{0, 0, 250};            // blue
+  const u_int8_t color_selected_both[3]{0, 250, 250};           // teal
+  const u_int8_t color_outlier_observation[3]{250, 0, 250};     // purple
+  const u_int8_t color_current_kf[3]{255, 255, 255};            // white
+  const u_int8_t color_covisibility_neighbors[3]{255, 0, 250};  // purple
+  const u_int8_t color_loop_closure_cam[3]{255, 255, 0};        // yellow
   const u_int8_t color_loop_closure_candidates[3]{155, 255,
                                                   155};  // light green
 
@@ -794,35 +801,57 @@ void draw_scene() {
   if (show_cameras3d) {
     Eigen::Vector3d lc_cam_position;
     Eigen::Vector3d ckf_cam_position;
+    Sophus::SE3d T_w_cl;
+    Sophus::SE3d T_w_cr = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
     for (const auto& cam : cameras) {
-      if (cam.first.first ==
-          loop_closure_frame) {  // cam that loop closure was run on
-        ckf_cam_position = cam.second.T_w_c.translation();
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_current_kf, 0.1f);
-      } else if (cam.first == tcid1) {  // current left cam
-        render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_left,
-                      0.1f);
-      } else if (cam.first == tcid2) {  // current right cam
-        render_camera(cam.second.T_w_c.matrix(), 3.0f, color_selected_right,
-                      0.1f);
-      } else if (cam.first.first ==
-                 loop_closure_candidate) {  // loop closure cam
-        lc_cam_position = cam.second.T_w_c.translation();
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_loop_closure_cam,
-                      0.1f);
+      if (cam.first.second == 0) {
+        T_w_cl = cam.second.T_w_c;
+      } else {
+        T_w_cr = cam.second.T_w_c;
+      }
+      if (cam.first.first == loop_closure_frame) {
+        if (cam.first.second == 0) {
+          ckf_cam_position = T_w_cl.translation();
+          render_camera(T_w_cl.matrix(), 2.0f, color_current_kf, 0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_current_kf, 0.1f);
+        }
+      } else if (cam.first.first == tcid1.first) {
+        if (cam.first.second == 0) {
+          render_camera(T_w_cl.matrix(), 2.0f, color_selected_left, 0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_selected_right, 0.1f);
+        }
+      } else if (cam.first.first == loop_closure_candidate) {
+        if (cam.first.second == 0) {
+          lc_cam_position = T_w_cl.translation();
+          render_camera(T_w_cl.matrix(), 2.0f, color_loop_closure_cam, 0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_loop_closure_cam, 0.1f);
+        }
       } else if (loop_closure_candidates.find(cam.first.first) !=
-                 loop_closure_candidates.end()) {  // loop closure candidates
-        render_camera(cam.second.T_w_c.matrix(), 2.0f,
-                      color_loop_closure_candidates, 0.1f);
-      } else if (cov_frames.find(cam.first.first) !=
-                 cov_frames.end()) {  // neighbors in covisibility graph
-        render_camera(cam.second.T_w_c.matrix(), 2.0f,
-                      color_outlier_observation, 0.1f);
-      } else if (cam.first.second == 0) {  // all other keyframes (left)
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_camera_left, 0.1f);
-      } else {  // all other keyframes (right)
-        render_camera(cam.second.T_w_c.matrix(), 2.0f, color_camera_right,
-                      0.1f);
+                 loop_closure_candidates.end()) {
+        if (cam.first.second == 0) {
+          render_camera(T_w_cl.matrix(), 2.0f, color_loop_closure_candidates,
+                        0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_loop_closure_candidates,
+                        0.1f);
+        }
+      } else if (cov_frames.find(cam.first.first) != cov_frames.end()) {
+        if (cam.first.second == 0) {
+          render_camera(T_w_cl.matrix(), 2.0f, color_covisibility_neighbors,
+                        0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_covisibility_neighbors,
+                        0.1f);
+        }
+      } else {
+        if (cam.first.second == 0) {
+          render_camera(T_w_cl.matrix(), 2.0f, color_camera_left, 0.1f);
+        } else {
+          render_camera(T_w_cr.matrix(), 2.0f, color_camera_right, 0.1f);
+        }
       }
     }
     render_camera(current_pose.matrix(), 2.0f, color_camera_current, 0.1f);
@@ -928,6 +957,13 @@ void draw_scene() {
       }
     }
   }
+}
+void clear_loop_closure() {
+  merged_lms.clear();
+  merged_lmmd.matches.clear();
+  loop_closure_candidate = -1;
+  loop_closure_candidates.clear();
+  continue_next = true;
 }
 void append_pose_to_stream(const size_t& i, const Sophus::SE3d& pose,
                            std::ofstream& out) {
@@ -1185,9 +1221,50 @@ void update_os_options() {
   os_opts.reprojection_error_pnp_inlier_threshold_pixel =
       reprojection_error_pnp_inlier_threshold_pixel;
 }
+void update_abs_poses() {
+  // use bfs over essential graph
+  for (auto& kf_1 : cov_frames) {
+    TimeCamId tcid_kf1(kf_1, 0);
+    for (auto& kf_2 : cov_frames) {
+      if (kf_1 == kf_2) continue;  // don't need relative pose between itself
+      TimeCamId tcid_kf2(kf_2, 0);
+      Sophus::SE3d T_w_kf1 = cameras_opt.at(tcid_kf1).T_w_c;
+      Sophus::SE3d T_w_kf2 = cameras_opt.at(tcid_kf2).T_w_c;
+      Sophus::SE3d T_kf1_kf2 = T_w_kf1.inverse() * T_w_kf2;
+      relative_transforms.emplace(std::make_pair(kf_2, kf_1), T_kf1_kf2);
+    }
+  }
+  std::deque<FrameId> queue;
+  std::unordered_set<FrameId> visited;
+  for (auto& kf : cov_frames) {
+    queue.push_back(kf);
+    visited.emplace(kf);
+  }
+  const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
+  while (!queue.empty()) {
+    FrameId curr_node = queue.front();
+    queue.pop_front();
+    auto& neighbors = cov_graph_opt.at(curr_node);
+    for (auto& neighbor : neighbors) {
+      if (visited.count(neighbor.first) > 0 ||
+          neighbor.second < min_weight_essential)
+        continue;
+      const Sophus::SE3d T_neighbor_curr =
+          relative_transforms.at(std::make_pair(curr_node, neighbor.first));
+      TimeCamId tcid_curr(curr_node, 0);
+      const Sophus::SE3d T_w_curr = cameras_opt[tcid_curr].T_w_c;
+      TimeCamId tcidl(neighbor.first, 0), tcidr(neighbor.first, 1);
+      cameras_opt[tcidl].T_w_c = T_w_curr * T_neighbor_curr.inverse();
+      cameras_opt[tcidr].T_w_c = T_w_curr * T_neighbor_curr.inverse() * T_0_1;
+      visited.emplace(neighbor.first);
+      queue.push_back(neighbor.first);
+    }
+  }
+}
 void update_optimized_variables() {
   opt_thread->join();
   landmarks = landmarks_opt;
+  update_abs_poses();
   cameras = cameras_opt;
   calib_cam = calib_cam_opt;
   cov_graph = cov_graph_opt;
@@ -1307,7 +1384,6 @@ bool next_step() {
   /*MAPPING*/
   if (take_keyframe) {
     frames_since_last_kf = 0;
-    loop_closure_frame = tcidl.first;
     std::cout << "Adding as keyframe..." << std::endl;
 
     // Stereo feature matching
@@ -1333,17 +1409,21 @@ bool next_step() {
 
     // Add new keyframe
     cameras[tcidl].T_w_c = current_pose;
+    std::cout << cameras[tcidl].T_w_c.matrix() << std::endl;
+    std::cout << cameras[tcidl].T_w_c.matrix() << std::endl;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
+
+    prev_kf_pose = current_pose;
 
     add_new_landmarks(tcidl, tcidr, kdl, kdr, current_pose, calib_cam, inliers,
                       md_stereo, md_local, d_min, d_max, landmarks, prev_lm_ids,
                       next_landmark_id);
 
-    add_new_keyframe(tcidl.first, prev_lm_ids, min_weight, kf_frames,
-                     cov_graph);
+    add_new_keyframe(tcidl.first, prev_lm_ids, cameras, min_weight,
+                     relative_transforms, kf_frames, cov_graph);
 
     // Loop Closure + Local Bundle Adjustment + Remove Keyframes
-    optimize();
+    optimize(tcidl);
     auto end = std::chrono::high_resolution_clock::now();
     time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
                       end - end_tracking)
@@ -1485,7 +1565,7 @@ void compute_projections(ImageProjections& image_projections) {
 //}
 
 // Optimize local map
-void optimize() {
+void optimize(TimeCamId tcidl) {
   auto start = std::chrono::high_resolution_clock::now();
 
   std::cout << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
@@ -1513,6 +1593,7 @@ void optimize() {
 
   opt_running = true;
 
+  loop_closure_frame = tcidl.first;
   opt_thread.reset(new std::thread([ba_options] {
     TimeCamId tcidl(loop_closure_frame, 0);
     Sophus::SE3d pose = cameras_opt.at(tcidl).T_w_c;
@@ -1535,18 +1616,18 @@ void optimize() {
         merged_lms.emplace(match.second);
       }
       merged_lmmd = lmmd;
-      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph_opt,
-                      kf_frames_opt, landmarks_opt, prev_lm_ids_opt,
-                      old_landmarks);
+      merge_landmarks(loop_closure_frame, lmmd, cameras_opt, min_weight,
+                      relative_transforms, cov_graph_opt, kf_frames_opt,
+                      landmarks_opt, prev_lm_ids_opt, old_landmarks);
       std::cout << "SIZE AFTER: " << landmarks_opt.size() << std::endl;
     }
+    get_cov_map(loop_closure_frame, kf_frames_opt, cov_graph_opt, local_lms,
+                cov_frames);
     std::set<TimeCamId> cov_cameras;
     for (auto& kf : cov_frames) {
       cov_cameras.emplace(kf, 0);
       cov_cameras.emplace(kf, 1);
     }
-    get_cov_map(loop_closure_frame, kf_frames_opt, cov_graph_opt, local_lms,
-                cov_frames);
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);
 
