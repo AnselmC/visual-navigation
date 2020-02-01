@@ -110,7 +110,7 @@ Calibration calib_cam_opt;
 tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 
 /// timestamps for all stereo pairs
-std::vector<FrameId> timestamps;
+std::vector<int64_t> timestamps;
 
 /// detected feature locations and descriptors
 Corners feature_corners;
@@ -736,8 +736,9 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
       std::string line;
       std::getline(times, line);
 
-      if (line.size() < 20 || line[0] == '#' || id > 2700) continue;
+      if (line.size() < 20 || line[0] == '#') continue;
 
+      timestamp = std::strtoll(line.substr(0, 19).c_str(), NULL, 10);
       std::string img_name = line.substr(20, line.size() - 21);
 
       // ensure that we actually read a new timestamp (and not e.g. just newline
@@ -887,8 +888,6 @@ bool next_step() {
 
     compute_projections();
 
-    current_frame++;
-    return true;
   } else {
     TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
 
@@ -945,13 +944,10 @@ bool next_step() {
     // update image views
     change_display_to_image(tcidl);
     change_display_to_image(tcidr);
-
-    current_frame++;
-    return true;
   }
   // Translation: in the order of [x,y,z]
-  vo_csv << current_frame << "," << current_pose.translation()[0] << ","
-         << current_pose.translation()[1] << ","
+  vo_csv << timestamps.at(current_frame) << "," << current_pose.translation()[0]
+         << "," << current_pose.translation()[1] << ","
          << current_pose.translation()[2] << ",";
 
   // Quaternion: in the order of [w,x,y,z]
