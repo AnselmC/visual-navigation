@@ -482,7 +482,12 @@ LandmarkMatchData get_landmark_correspondences(const TimeCamId& tcid0,
     TrackId tid1 =
         get_corresponding_landmark(tcid1, kf_frames, landmarks, fid1);
     if (tid1 == -1) continue;
-    if (tid0 == tid1) continue;
+    // if (tid0 == tid1) continue;
+    // double dist = (landmarks.at(tid0).p - landmarks.at(tid1).p).norm();
+    // std::cout << "Dist: " << dist << std::endl;
+    // if (dist <= 1) {
+    //  lmmd.matches.emplace_back(tid0, tid1);
+    //}
     lmmd.matches.emplace_back(tid0, tid1);
   }
   return lmmd;
@@ -537,7 +542,6 @@ FrameId perform_matching(const Keyframes& kf_frames,
   FrameId final_candidate = -1;
   int num_best_inliers = 0;
   for (auto& candidate : candidates) {
-    // TODO: only match features that are landmarks already
     TimeCamId tcid_candidate(candidate, 0);
     KeypointsData kd_new = feature_corners.at(tcid_new);
     KeypointsData kd_candidate = feature_corners.at(tcid_candidate);
@@ -550,28 +554,28 @@ FrameId perform_matching(const Keyframes& kf_frames,
         tcid_new, tcid_candidate, md_features, kf_frames, landmarks);
     std::cout << "Num matches that are landmarks: " << local_lmmd.matches.size()
               << std::endl;
-    // std::vector<int> inliers;
-    // Sophus::SE3d sim_transform;
-    // compute_similarity_transform(
-    //    local_lmmd, landmarks,
-    //    opts.reprojection_error_pnp_inlier_threshold_pixel, sim_transform,
-    //    inliers);
-    // std::cout << "NUM INLIERS: " << inliers.size() << std::endl;
-    // if (int(inliers.size()) >= opts.min_inliers_loop_closing &&
-    //    int(inliers.size()) > num_best_inliers) {
-    //  lmmd.matches.clear();
-    //  final_candidate = candidate;
-    //  num_best_inliers = inliers.size();
-    //  for (auto& inlier : inliers) {
-    //    lmmd.matches.push_back(local_lmmd.matches.at(inlier));
-    //  }
-    //}
-    if (int(local_lmmd.matches.size()) >= opts.min_inliers_loop_closing &&
-        int(local_lmmd.matches.size()) > num_best_inliers) {
+    std::vector<int> inliers;
+    Sophus::SE3d sim_transform;
+    compute_similarity_transform(
+        local_lmmd, landmarks,
+        opts.reprojection_error_pnp_inlier_threshold_pixel, sim_transform,
+        inliers);
+    std::cout << "NUM INLIERS: " << inliers.size() << std::endl;
+    if (int(inliers.size()) >= opts.min_inliers_loop_closing &&
+        int(inliers.size()) > num_best_inliers) {
+      lmmd.matches.clear();
       final_candidate = candidate;
-      num_best_inliers = local_lmmd.matches.size();
-      lmmd.matches = local_lmmd.matches;
+      num_best_inliers = inliers.size();
+      for (auto& inlier : inliers) {
+        lmmd.matches.push_back(local_lmmd.matches.at(inlier));
+      }
     }
+    // if (int(local_lmmd.matches.size()) >= opts.min_inliers_loop_closing &&
+    //    int(local_lmmd.matches.size()) > num_best_inliers) {
+    //  final_candidate = candidate;
+    //  num_best_inliers = local_lmmd.matches.size();
+    //  lmmd.matches = local_lmmd.matches;
+    //}
   }
   return final_candidate;
 }

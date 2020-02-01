@@ -136,6 +136,7 @@ using CovisibilityGraph = std::unordered_map<FrameId, Connections>;
 // each keyframe has an associated vector of landmark ids
 using LandmarkIds = std::set<TrackId>;
 using Keyframes = tbb::concurrent_unordered_map<FrameId, LandmarkIds>;
+using KeyframeTimestamps = std::unordered_map<int64_t, FrameId>;
 
 struct OrbSLAMOptions {
   int num_features_per_image;

@@ -84,7 +84,10 @@ void clear_loop_closure();
 bool next_step();
 void optimize(TimeCamId tcidl);
 void detect_loop_closure();
+void update_optimized_variables();
 void compute_projections();
+void save_scene();
+void record_video();
 
 ///////////////////////////////////////////////////////////////////////////////
 /// Constants
@@ -106,6 +109,8 @@ Sophus::SE3d prev_kf_pose;
 Sophus::SE3d prev_pose;
 RelativeTransforms relative_transforms;
 bool take_keyframe = true;
+bool save_scene_flag = false;
+bool record_video_flag = false;
 TrackId next_landmark_id = 0;
 int frames_since_last_kf = 0;
 
@@ -116,6 +121,7 @@ std::atomic<bool> loop_closure_finished{false};
 std::atomic<bool> right_keypoint_detection_running{false};
 Keyframes kf_frames;
 Keyframes kf_frames_opt;
+KeyframeTimestamps kf_ts;
 std::set<TrackId> prev_lm_ids;
 std::set<TrackId> prev_lm_ids_opt;
 
@@ -146,7 +152,7 @@ CovisibilityGraph cov_graph_opt;
 tbb::concurrent_unordered_map<TimeCamId, std::string> images;
 
 /// timestamps for all stereo pairs
-std::vector<FrameId> timestamps;
+std::vector<int64_t> timestamps;
 
 std::set<FrameId> cov_frames;
 FrameId loop_closure_frame;
@@ -201,6 +207,7 @@ pangolin::Var<int> show_cam2("ui.show_cam2", 1, 0, NUM_CAMS - 1);
 pangolin::Var<bool> lock_frames("ui.lock_frames", true, false, true);
 pangolin::Var<bool> show_detected("ui.show_detected", true, false, true);
 pangolin::Var<bool> show_covgraph("hidden.show_covgraph", true, false, true);
+pangolin::Var<bool> show_essential("hidden.show_essential", true, false, true);
 pangolin::Var<bool> show_matches("ui.show_matches", true, false, true);
 pangolin::Var<bool> show_inliers("ui.show_inliers", true, false, true);
 pangolin::Var<bool> show_reprojections("ui.show_reprojections", true, false,
@@ -247,7 +254,7 @@ pangolin::Var<int> max_num_kfs("hidden.max_num_kfs", 10, 5, 20);
 pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
 pangolin::Var<int> min_inliers_loop_closing("hidden.min_inliers_loop_closing",
-                                            50, 1, 200);
+                                            12, 1, 200);
 pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 80, 30,
                                         150);
 
@@ -280,6 +287,8 @@ pangolin::Var<bool> continue_next("ui.continue_next", false, false, true);
 using Button = pangolin::Var<std::function<void(void)>>;
 
 Button next_step_btn("ui.next_step", &next_step);
+Button save_scene_btn("ui.save_scene", &save_scene);
+Button record_video_btn("ui.record_video", &record_video);
 Button save_poses_btn("ui.save_poses", &save_poses);
 Button clear_loop_closure_btn("ui.clear_loop_closure", &clear_loop_closure);
 std::string pose_path = "save_poses/";
@@ -297,6 +306,7 @@ int main(int argc, char** argv) {
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string vo_path = "visual_odometry_poses.csv";
   std::string cam_calib = "opt_calib.json";
+  std::string video_folder = "recording/";
 
   CLI::App app{"Orb SLAM."};
 
@@ -383,6 +393,15 @@ int main(int argc, char** argv) {
       glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
       draw_scene();
+      if (save_scene_flag) {
+        display3D.SaveOnRender("image");
+        save_scene_flag = false;
+      }
+
+      if (record_video_flag) {
+        display3D.SaveOnRender(video_folder + "image_" +
+                               std::to_string(current_frame));
+      }
 
       img_view_display.Activate();
 
@@ -760,7 +779,7 @@ void draw_scene() {
     }
     glEnd();
   }
-  if (show_covgraph) {
+  if (show_covgraph || show_essential) {
     glLineWidth(1.0);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -772,6 +791,7 @@ void draw_scene() {
       try {
         node_position = cameras_copy.at(TimeCamId(kf, 0)).T_w_c.translation();
       } catch (std::out_of_range& e) {
+        std::cout << "Couldn't find node position" << std::endl;
         std::cerr << e.what() << std::endl;
         continue;
       }
@@ -782,17 +802,21 @@ void draw_scene() {
           neighbor_position =
               cameras_copy.at(TimeCamId(neighbor.first, 0)).T_w_c.translation();
         } catch (std::out_of_range& e) {
+          std::cout << "Couldn't find neighbor position" << std::endl;
           std::cerr << e.what() << std::endl;
           continue;
         }
-        if (neighbor.second > min_weight_essential) {
+        if (neighbor.second > min_weight_essential && show_essential) {
           glColor3ubv(color_outlier_observation);  // essential
-        } else {
+          pangolin::glDrawLine(node_position[0], node_position[1],
+                               node_position[2], neighbor_position[0],
+                               neighbor_position[1], neighbor_position[2]);
+        } else if (show_covgraph) {
           glColor3ubv(color_selected_both);  // covisibility
+          pangolin::glDrawLine(node_position[0], node_position[1],
+                               node_position[2], neighbor_position[0],
+                               neighbor_position[1], neighbor_position[2]);
         }
-        pangolin::glDrawLine(node_position[0], node_position[1],
-                             node_position[2], neighbor_position[0],
-                             neighbor_position[1], neighbor_position[2]);
       }
     }
   }
@@ -888,14 +912,13 @@ void draw_scene() {
     int64_t ts = timestamps.at(current_frame);
     glPointSize(3.0);
     glBegin(GL_POINTS);
-    for (auto it = groundtruths.begin();
-         it <= groundtruths.begin() + current_frame; it++) {
+    for (auto it = groundtruths.begin(); it <= groundtruths.end(); it++) {
       Eigen::Vector3d path_point = std::get<0>((*it)).translation();
       if (show_gt_path) {
         pangolin::glVertex(path_point);
       }
       int64_t ts_gt = std::get<2>((*it));
-      if (ts_gt >= ts) {
+      if (ts_gt >= ts || it == groundtruths.end() - 1) {
         glEnd();
         if (show_gt_cam) {
           gt_cam = std::get<0>((*it)).matrix();
@@ -905,6 +928,29 @@ void draw_scene() {
       }
     }
   }
+  // Eigen::Matrix4d gt_cam;
+  // if (show_gt_path || show_gt_cam) {
+  //  glColor3ubv(color_groundtruth);
+  //  int64_t ts = timestamps.at(current_frame);
+  //  glPointSize(3.0);
+  //  glBegin(GL_POINTS);
+  //  for (auto it = groundtruths.begin();
+  //       it <= groundtruths.begin() + current_frame; it++) {
+  //    Eigen::Vector3d path_point = std::get<0>((*it)).translation();
+  //    if (show_gt_path) {
+  //      pangolin::glVertex(path_point);
+  //    }
+  //    int64_t ts_gt = std::get<2>((*it));
+  //    if (ts_gt >= ts) {
+  //      glEnd();
+  //      if (show_gt_cam) {
+  //        gt_cam = std::get<0>((*it)).matrix();
+  //        render_camera(gt_cam, 3.0f, color_groundtruth, 0.1f);
+  //      }
+  //      break;
+  //    }
+  //  }
+  //}
 
   // render points
   if (show_points3d && landmarks.size() > 0) {
@@ -959,13 +1005,14 @@ void draw_scene() {
   }
 }
 void clear_loop_closure() {
+  update_optimized_variables();
   merged_lms.clear();
   merged_lmmd.matches.clear();
   loop_closure_candidate = -1;
   loop_closure_candidates.clear();
   continue_next = true;
 }
-void append_pose_to_stream(const size_t& i, const Sophus::SE3d& pose,
+void append_pose_to_stream(const int64_t& i, const Sophus::SE3d& pose,
                            std::ofstream& out) {
   // x, y, z
   out << i << "," << pose.translation()[0] << "," << pose.translation()[1]
@@ -984,24 +1031,34 @@ void save_poses() {
   std::string header = "#timestamp,x,y,z,qx,qy,qz,qw\n";
 
   std::ofstream gt_out, est_out, vo_out;
-  gt_out.open(gt);
   est_out.open(estimated);
-  vo_out.open(vo);
-  gt_out << header;
   est_out << header;
+  vo_out.open(vo);
   vo_out << header;
-  for (size_t i = 0; i < estimated_poses.size(); i++) {
-    auto& gt_pose = std::get<0>(groundtruths.at(i));
-    auto& est_pose = estimated_poses.at(i);
-    auto& vo_pose = vo_poses.at(i);
-
-    append_pose_to_stream(i, gt_pose, gt_out);
-    append_pose_to_stream(i, est_pose, est_out);
-    append_pose_to_stream(i, vo_pose, vo_out);
+  for (auto ts : kf_ts) {
+    TimeCamId tcid(ts.second, 0);
+    if (cameras.find(tcid) == cameras.end()) continue;
+    auto& est_pose = cameras.at(tcid).T_w_c;
+    auto itr = std::find(timestamps.begin(), timestamps.end(), ts.first);
+    int index = std::distance(timestamps.begin(), itr);
+    auto& vo_pose = vo_poses.at(index);
+    append_pose_to_stream(ts.first, est_pose, est_out);
+    append_pose_to_stream(ts.first, vo_pose, vo_out);
   }
-  gt_out.close();
   est_out.close();
   vo_out.close();
+  gt_out.open(gt);
+  gt_out << header;
+  for (size_t i = 0; i < groundtruths.size(); i++) {
+    auto ts = std::get<2>(groundtruths.at(i));
+    // if (kf_ts.find(ts) == kf_ts.end()) continue;
+    // TimeCamId tcid(kf_ts.at(ts), 0);
+    auto& gt_pose = std::get<0>(groundtruths.at(i));
+    // if (cameras.find(tcid) == cameras.end()) continue;
+
+    append_pose_to_stream(ts, gt_pose, gt_out);
+  }
+  gt_out.close();
 }
 void load_visualodometry(const std::string& vo_path) {
   // Load IMU to world transformations
@@ -1039,7 +1096,8 @@ void load_visualodometry(const std::string& vo_path) {
     vo_poses.emplace_back(T_wref_imu);
     cnt++;
   }
-  std::cout << "Loaded " << cnt << " visual odometry path values" << std::endl;
+  std::cout << "Loaded " << vo_poses.size() << " visual odometry path values"
+            << std::endl;
 }
 void load_groundtruth(const std::string& dataset_path) {
   // Load transformation from cameras to baseframe
@@ -1059,7 +1117,7 @@ void load_groundtruth(const std::string& dataset_path) {
   const std::string groundtruth_path =
       dataset_path + "/state_groundtruth_estimate0/data.csv";
   std::ifstream times(groundtruth_path);
-  uint id = 0;
+  int id = 0;
   Eigen::Vector3d trans;
   Sophus::SE3d T_w_wref;
   Sophus::SE3d T_cl_cr;
@@ -1067,7 +1125,7 @@ void load_groundtruth(const std::string& dataset_path) {
     std::string line;
     std::getline(times, line);
     // ignore first and last line
-    if (line[0] == '#' || id >= timestamps.size()) continue;
+    if (line[0] == '#') continue;
     std::stringstream ls(line);
     std::string cell;
     std::map<std::string, double> cells;
@@ -1088,10 +1146,10 @@ void load_groundtruth(const std::string& dataset_path) {
       j++;
     }
     // time stamp from GT is older than time stamp from frames, go to next GT ts
-    if (std::find(timestamps.begin(), timestamps.end(), ts) ==
-        timestamps.end()) {
-      continue;
-    }
+    // if (std::find(timestamps.begin(), timestamps.end(), ts) ==
+    //    timestamps.end()) {
+    //  continue;
+    //}
 
     trans << cells["x"], cells["y"], cells["z"];
     Eigen::Quaterniond quat(cells["qw"], cells["qx"], cells["qy"], cells["qz"]);
@@ -1109,7 +1167,8 @@ void load_groundtruth(const std::string& dataset_path) {
 
     id++;
   }
-  std::cout << "Loaded " << id << " groundtruth values" << std::endl;
+  std::cout << "Loaded " << groundtruths.size() << " groundtruth values"
+            << std::endl;
 }
 
 // Load images, calibration, and features / matches if available
@@ -1300,15 +1359,27 @@ bool next_step() {
   prev_pose = current_pose;
   TimeCamId tcidl(current_frame, 0), tcidr(current_frame, 1);
   if (!opt_running && opt_finished) {
-    update_optimized_variables();
     if (loop_closure_candidate != -1) {
       std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
       return false;  // don't continue next
     }
+    update_optimized_variables();
   }
 
   // only stop once all threads have joined
-  if (current_frame >= int(groundtruths.size())) return false;
+  if (current_frame >= int(timestamps.size()) - 1) {
+    // full bundle adjustment
+    BundleAdjustmentOptions ba_options;
+    ba_options.optimize_intrinsics = ba_optimize_intrinsics;
+    ba_options.use_huber = true;
+    ba_options.huber_parameter = reprojection_error_huber_pixel;
+    ba_options.max_num_iterations = 20;
+    ba_options.verbosity_level = ba_verbose;
+    std::set<TimeCamId> fixed_cameras;
+    bundle_adjustment(feature_corners, ba_options, fixed_cameras, calib_cam,
+                      cameras, landmarks);
+    return false;
+  }
   /* TRACKING */
 
   // Orb feature detection for left image
@@ -1409,8 +1480,6 @@ bool next_step() {
 
     // Add new keyframe
     cameras[tcidl].T_w_c = current_pose;
-    std::cout << cameras[tcidl].T_w_c.matrix() << std::endl;
-    std::cout << cameras[tcidl].T_w_c.matrix() << std::endl;
     cameras[tcidr].T_w_c = current_pose * T_0_1;
 
     prev_kf_pose = current_pose;
@@ -1419,6 +1488,7 @@ bool next_step() {
                       md_stereo, md_local, d_min, d_max, landmarks, prev_lm_ids,
                       next_landmark_id);
 
+    kf_ts.emplace(timestamps.at(current_frame), tcidl.first);
     add_new_keyframe(tcidl.first, prev_lm_ids, cameras, min_weight,
                      relative_transforms, kf_frames, cov_graph);
 
@@ -1476,6 +1546,8 @@ bool next_step() {
             << " sec" << std::endl;
   return true;
 }
+void save_scene() { save_scene_flag = true; }
+void record_video() { record_video_flag = !record_video_flag; }
 
 // Compute reprojections for all landmark observations for visualization and
 // outlier removal.
