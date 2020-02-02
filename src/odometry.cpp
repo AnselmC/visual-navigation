@@ -78,6 +78,7 @@ void load_data(const std::string& path, const std::string& calib_path);
 bool next_step();
 void optimize();
 void compute_projections();
+void save_landmarks();
 
 ///////////////////////////////////////////////////////////////////////////////
 /// Constants
@@ -219,6 +220,8 @@ pangolin::Var<bool> continue_next("ui.continue_next", false, false, true);
 using Button = pangolin::Var<std::function<void(void)>>;
 
 Button next_step_btn("ui.next_step", &next_step);
+Button save_landmarks_btn("ui.save_landmarks", &save_landmarks);
+std::string evaluation_path = "evaluation/";
 
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI and Boilerplate Implementation
@@ -393,6 +396,22 @@ int main(int argc, char** argv) {
   return 0;
 }
 
+void save_landmarks() {
+  std::string filename = evaluation_path + "vo_landmarks.csv";
+  std::string header = "x, y, z\n";
+  std::ofstream out;
+  out.open(filename);
+  out << header;
+  for (auto& lm_kv : landmarks) {
+    auto p = lm_kv.second.p;
+    out << p[0] << ", " << p[1] << ", " << p[2] << "\n";
+  }
+  for (auto& lm_kv : old_landmarks) {
+    auto p = lm_kv.second.p;
+    out << p[0] << ", " << p[1] << ", " << p[2] << "\n";
+  }
+  out.close();
+}
 // Visualize features and related info on top of the image views
 void draw_image_overlay(pangolin::View& v, size_t view_id) {
   UNUSED(v);
@@ -804,6 +823,8 @@ void load_data(const std::string& dataset_path, const std::string& calib_path) {
 // Execute next step in the overall odometry pipeline. Call this repeatedly
 // until it returns false for automatic execution.
 bool next_step() {
+  std::cout << "Num landmarks: " << landmarks.size() + old_landmarks.size()
+            << std::endl;
   if (current_frame >= int(images.size()) / NUM_CAMS) return false;
 
   const Sophus::SE3d T_0_1 = calib_cam.T_i_c[0].inverse() * calib_cam.T_i_c[1];
