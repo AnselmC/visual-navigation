@@ -80,6 +80,7 @@ void load_data(const std::string& path, const std::string& calib_path,
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr);
 void save_poses();
+void save_landmarks();
 void clear_loop_closure();
 bool next_step();
 void optimize(TimeCamId tcidl);
@@ -290,8 +291,9 @@ Button next_step_btn("ui.next_step", &next_step);
 Button save_scene_btn("ui.save_scene", &save_scene);
 Button record_video_btn("ui.record_video", &record_video);
 Button save_poses_btn("ui.save_poses", &save_poses);
+Button save_landmarks_btn("ui.save_landmarks", &save_landmarks);
 Button clear_loop_closure_btn("ui.clear_loop_closure", &clear_loop_closure);
-std::string pose_path = "save_poses/";
+std::string evaluation_path = "evaluation/";
 
 ///////////////////////////////////////////////////////////////////////////////
 /// GUI and Boilerplate Implementation
@@ -315,8 +317,8 @@ int main(int argc, char** argv) {
                  "Dataset path. Default: " + dataset_path);
   app.add_option("--vo-path", vo_path,
                  "Visual odometry poses path. Default: " + vo_path);
-  app.add_option("--poses-path", pose_path,
-                 "Where to save poses. Default: " + pose_path);
+  app.add_option("--eval-path", evaluation_path,
+                 "Where to save evaluation. Default: " + evaluation_path);
   app.add_option("--cam-calib", cam_calib,
                  "Path to camera calibration. Default: " + cam_calib);
 
@@ -981,21 +983,21 @@ void draw_scene() {
     }
     glEnd();
     auto old_landmarks_copy = old_landmarks;
-    auto landmarks_copy = landmarks;
+    auto landmarks_copy = landmarks_opt;
     for (auto& match : merged_lmmd.matches) {
       bool old_lm_exists = old_landmarks_copy.count(match.first) > 0;
       bool kept_lm_exists = landmarks_copy.count(match.second) > 0;
       if (old_lm_exists && kept_lm_exists) {
         auto old_lm = old_landmarks_copy.at(match.first).p;
         auto kept_lm = landmarks_copy.at(match.second).p;
-        glColor3ubv(color_selected_left);
-        glPointSize(3.0);
+        glColor3ubv(color_camera_current);
+        glPointSize(5.0);
         glBegin(GL_POINTS);
         pangolin::glVertex(old_lm);
-        glColor3ubv(color_selected_right);
+        glColor3ubv(color_loop_closure_candidates);
         pangolin::glVertex(kept_lm);
         glEnd();
-        glLineWidth(1.0);
+        glLineWidth(1.5);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         pangolin::glDrawLine(old_lm[0], old_lm[1], old_lm[2], kept_lm[0],
@@ -1024,10 +1026,23 @@ void append_pose_to_stream(const int64_t& i, const Sophus::SE3d& pose,
       << pose.unit_quaternion().coeffs()[3] << "\n";
 }
 
+void save_landmarks() {
+  std::string filename = evaluation_path + "os_landmarks.csv";
+  std::string header = "x, y, z\n";
+  std::ofstream out;
+  out.open(filename);
+  out << header;
+  for (auto& lm_kv : landmarks) {
+    auto p = lm_kv.second.p;
+    out << p[0] << ", " << p[1] << ", " << p[2] << "\n";
+  }
+  out.close();
+}
+
 void save_poses() {
-  std::string gt = pose_path + "groundtruth.csv";
-  std::string estimated = pose_path + "estimated.csv";
-  std::string vo = pose_path + "vo.csv";
+  std::string gt = evaluation_path + "groundtruth.csv";
+  std::string estimated = evaluation_path + "estimated.csv";
+  std::string vo = evaluation_path + "vo.csv";
   std::string header = "#timestamp,x,y,z,qx,qy,qz,qw\n";
 
   std::ofstream gt_out, est_out, vo_out;
@@ -1373,7 +1388,7 @@ bool next_step() {
     ba_options.optimize_intrinsics = ba_optimize_intrinsics;
     ba_options.use_huber = true;
     ba_options.huber_parameter = reprojection_error_huber_pixel;
-    ba_options.max_num_iterations = 20;
+    ba_options.max_num_iterations = 80;
     ba_options.verbosity_level = ba_verbose;
     std::set<TimeCamId> fixed_cameras;
     bundle_adjustment(feature_corners, ba_options, fixed_cameras, calib_cam,
