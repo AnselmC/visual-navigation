@@ -306,6 +306,7 @@ int main(int argc, char** argv) {
   auto global_start = std::chrono::high_resolution_clock::now();
   auto global_end = std::chrono::high_resolution_clock::now();
   bool show_gui = true;
+  bool black_background = false;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string vo_path = "visual_odometry_poses.csv";
   std::string cam_calib = "opt_calib.json";
@@ -322,6 +323,9 @@ int main(int argc, char** argv) {
                  "Where to save evaluation. Default: " + evaluation_path);
   app.add_option("--cam-calib", cam_calib,
                  "Path to camera calibration. Default: " + cam_calib);
+  app.add_option(
+      "--black", black_background,
+      "Black background in map representation, default is light gray");
 
   try {
     app.parse(argc, argv);
@@ -392,8 +396,10 @@ int main(int argc, char** argv) {
       }
 
       display3D.Activate(camera);
-      glClearColor(0.95f, 0.95f, 0.95f, 1.0f);  // light gray background
-      glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      if (black_background)
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+      else
+        glClearColor(0.95f, 0.95f, 0.95f, 1.0f);  // light gray background
 
       draw_scene();
       if (save_scene_flag) {
