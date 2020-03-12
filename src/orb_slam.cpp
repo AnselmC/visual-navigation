@@ -89,6 +89,7 @@ void update_optimized_variables();
 void compute_projections();
 void save_scene();
 void record_video();
+int recording_index = 0;
 
 ///////////////////////////////////////////////////////////////////////////////
 /// Constants
@@ -402,7 +403,8 @@ int main(int argc, char** argv) {
 
       if (record_video_flag) {
         display3D.SaveOnRender(video_folder + "image_" +
-                               std::to_string(current_frame));
+                               std::to_string(recording_index));
+        recording_index++;
       }
 
       img_view_display.Activate();
@@ -671,11 +673,11 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       text_row += 20;
     }
   }
-  std::string msg = too_slow ? "TOO SLOW (%.2f %% too slow)"
-                             : "Good speed (%.2f %% too slow)";
-  glColor3ubv(too_slow ? color_red : color_green);
-  float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
-  pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
+  // std::string msg = too_slow ? "TOO SLOW (%.2f %% too slow)"
+  //                           : "Good speed (%.2f %% too slow)";
+  // glColor3ubv(too_slow ? color_red : color_green);
+  // float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
+  // pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
 
   if (show_epipolar) {
     glLineWidth(1.0);
