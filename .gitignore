@@ -15,9 +15,7 @@ debug
 thirdparty/build-*
 # data
 data/*
-# ignore tex and org files
-*.tex
-*.org
+# ignore miscellaneous tex, org and emacs files
 *~
 *~
 *#
