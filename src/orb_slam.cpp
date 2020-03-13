@@ -225,6 +225,8 @@ pangolin::Var<bool> show_vo_path("hidden.show_vo_path", false, false, true);
 pangolin::Var<bool> show_gt_cam("ui.show_groundtruth", true, false, true);
 pangolin::Var<bool> show_gt_path("hidden.show_gt_path", false, false, true);
 pangolin::Var<bool> show_points3d("hidden.show_points", true, false, true);
+pangolin::Var<bool> black_background("hidden.black_background", true, false,
+                                     true);
 
 //////////////////////////////////////////////
 /// Feature extraction and matching options
@@ -257,7 +259,7 @@ pangolin::Var<int> min_weight("hidden.min_weight", 30, 1, 100);
 pangolin::Var<int> min_weight_k1("hidden.min_weight_k1", 10, 1, 30);
 pangolin::Var<int> min_inliers_loop_closing("hidden.min_inliers_loop_closing",
                                             12, 1, 200);
-pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 80, 30,
+pangolin::Var<int> min_weight_essential("hidden.min_weight_essential", 60, 30,
                                         150);
 
 pangolin::Var<double> d_min("hidden.d_min", 0.1, 1.0, 0.0);
@@ -306,7 +308,6 @@ int main(int argc, char** argv) {
   auto global_start = std::chrono::high_resolution_clock::now();
   auto global_end = std::chrono::high_resolution_clock::now();
   bool show_gui = true;
-  bool black_background = false;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string vo_path = "visual_odometry_poses.csv";
   std::string cam_calib = "opt_calib.json";
@@ -323,9 +324,6 @@ int main(int argc, char** argv) {
                  "Where to save evaluation. Default: " + evaluation_path);
   app.add_option("--cam-calib", cam_calib,
                  "Path to camera calibration. Default: " + cam_calib);
-  app.add_option(
-      "--black", black_background,
-      "Black background in map representation, default is light gray");
 
   try {
     app.parse(argc, argv);
@@ -768,7 +766,8 @@ void draw_scene() {
   const u_int8_t color_camera_current[3]{255, 0, 0};            // red
   const u_int8_t color_camera_left[3]{0, 125, 0};               // dark green
   const u_int8_t color_camera_right[3]{0, 0, 125};              // dark blue
-  const u_int8_t color_points[3]{255, 255, 255};                // white
+  const u_int8_t color_white[3]{255, 255, 255};                 // white
+  const u_int8_t color_black[3]{0, 0, 0};                       // black
   const u_int8_t color_selected_left[3]{0, 250, 0};             // green
   const u_int8_t color_selected_right[3]{0, 0, 250};            // blue
   const u_int8_t color_selected_both[3]{0, 250, 250};           // teal
@@ -984,7 +983,10 @@ void draw_scene() {
       } else if (outlier_in_cam_1 || outlier_in_cam_2) {
         glColor3ubv(color_outlier_observation);
       } else {
-        glColor3ubv(color_points);
+        if (black_background)
+          glColor3ubv(color_white);
+        else
+          glColor3ubv(color_black);
       }
 
       pangolin::glVertex(kv_lm.second.p);
