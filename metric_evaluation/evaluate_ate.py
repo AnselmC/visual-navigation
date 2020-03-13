@@ -115,7 +115,7 @@ def plot_traj(ax, stamps, traj, style, color, label):
         #    x=[]
         #    y=[]
         #last= stamps[i]
-    ax.plot3D(x, y, z, style, color=color, label=label)
+    ax.plot3D(x, y, z, style, alpha=0.5, color=color, label=label)
     ax.plot([x[0]], [y[0]], [z[0]], "*", color=color,  label="Start (" + label + ")")
     ax.plot([x[-1]], [y[-1]], [z[-1]], "o", color=color,  label="End (" + label + ")")
 
@@ -143,6 +143,8 @@ if __name__ == "__main__":
         '--plot', action="store_true", help='plot the first and the aligned second trajectory to an image (format: png)')
     parser.add_argument(
         '--verbose', help='print all evaluation data (otherwise, only the RMSE absolute translational error in meters after alignment will be printed)', action='store_true')
+    parser.add_argument('-b', action="store_true", help="activate black background (default is white)")
+    parser.add_argument('--no-axes', action="store_true", help="deactivate plotting of x,y,z axes")
     args = parser.parse_args()
 
     first_list = associate.read_file_list(args.first_file)
@@ -204,17 +206,21 @@ if __name__ == "__main__":
         from matplotlib.patches import Ellipse
         fig = plt.figure()
         ax = plt.axes(projection="3d")
+        fig.set_facecolor("black" if args.b else "white")
+        ax.set_facecolor("black" if args.b else "white")
+        ax.axis("off" if args.no_axes else "on")
         plot_traj(ax, first_stamps, first_xyz_full.transpose().A,
-                  '-', (1.0, 0.6, 0.0), "ground truth")
+                  '-', "lightgreen", "Ground truth")
         plot_traj(ax, second_stamps, second_xyz_full_aligned.transpose(
-        ).A, '-', (0.0, 0.98, 0.98), "estimated")
+        ).A, '-', "red", "Estimated (VO)")
 
         # label="difference"
         # for (a,b),(x1,y1,z1),(x2,y2,z2) in zip(matches,first_xyz.transpose().A,second_xyz_aligned.transpose().A):
         #    ax.plot([x1,x2],[y1,y2],'-',color="red",label=label)
         #    label=""
 
-        ax.legend()
+        ax.legend(facecolor="white", framealpha=0. if args.no_axes else 1.)
+        import pdb; pdb.set_trace()
 
         ax.set_xlabel('x [m]')
         ax.set_ylabel('y [m]')
