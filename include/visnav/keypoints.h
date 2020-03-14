@@ -132,7 +132,6 @@ char pattern_31_y_b[256] = {
 
 void detectKeypoints(const pangolin::ManagedImage<uint8_t>& img_raw,
                      KeypointsData& kd, int num_features) {
-  auto start = std::chrono::high_resolution_clock::now();
   cv::Mat image(img_raw.h, img_raw.w, CV_8U, img_raw.ptr);
 
   std::vector<cv::Point2f> points;
@@ -147,18 +146,10 @@ void detectKeypoints(const pangolin::ManagedImage<uint8_t>& img_raw,
       kd.corners.emplace_back(points[i].x, points[i].y);
     }
   }
-  auto end = std::chrono::high_resolution_clock::now();
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  std::cout << "Detect Keypoints took: " << time_taken << std::setprecision(9)
-            << " sec" << std::endl;
 }
 
 void computeAngles(const pangolin::ManagedImage<uint8_t>& img_raw,
                    KeypointsData& kd, bool rotate_features) {
-  auto start = std::chrono::high_resolution_clock::now();
   kd.corner_angles.resize(kd.corners.size());
 
   for (size_t i = 0; i < kd.corners.size(); i++) {
@@ -188,18 +179,10 @@ void computeAngles(const pangolin::ManagedImage<uint8_t>& img_raw,
 
     kd.corner_angles[i] = angle;
   }
-  auto end = std::chrono::high_resolution_clock::now();
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  std::cout << "Compute angles took: " << time_taken << std::setprecision(9)
-            << " sec" << std::endl;
 }
 
 void computeDescriptors(const pangolin::ManagedImage<uint8_t>& img_raw,
                         KeypointsData& kd) {
-  auto start = std::chrono::high_resolution_clock::now();
   kd.corner_descriptors.resize(kd.corners.size());
 
   for (size_t i = 0; i < kd.corners.size(); i++) {
@@ -231,13 +214,6 @@ void computeDescriptors(const pangolin::ManagedImage<uint8_t>& img_raw,
 
     kd.corner_descriptors[i] = descriptor;
   }
-  auto end = std::chrono::high_resolution_clock::now();
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  std::cout << "Compute descriptors took: " << time_taken
-            << std::setprecision(9) << " sec" << std::endl;
 }
 
 void detectKeypointsAndDescriptors(

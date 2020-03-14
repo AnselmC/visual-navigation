@@ -34,6 +34,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <atomic>
 #include <chrono>
 #include <iostream>
+#include <numeric>
 #include <thread>
 
 #include <yaml-cpp/yaml.h>
@@ -65,6 +66,11 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <visnav/tracks.h>
 
 #include <visnav/serialization.h>
+
+#define now() std::chrono::high_resolution_clock::now()
+
+#define to_mseconds(time) \
+  std::chrono::duration_cast<std::chrono::nanoseconds>(time).count() / 1e6
 
 using namespace visnav;
 
@@ -102,12 +108,175 @@ constexpr int NUM_CAMS = 2;
 /// Variables
 ///////////////////////////////////////////////////////////////////////////////
 
+///////////////////////////////////////////////////////////////////////////////
 // Profiling vars
+///////////////////////////////////////////////////////////////////////////////
+double next_step_time;
+std::vector<double> next_step_times;
+double tracking_time;
+std::vector<double> tracking_times;
+double orb_left_time;
+std::vector<double> orb_left_times;
+double orb_right_time;
+std::vector<double> orb_right_times;
+double tracking_prev_time;
+std::vector<double> tracking_prev_times;
+double tracking_local_time;
+std::vector<double> tracking_local_times;
+double kf_decision_time;
+std::vector<double> kf_decision_times;
+double mapping_time;
+std::vector<double> mapping_times;
+double opt_main_time;
+std::vector<double> opt_main_times;
+double stereo_match_time;
+std::vector<double> stereo_match_times;
+double add_landmarks_time;
+std::vector<double> add_landmarks_times;
+double add_keyframe_time;
+std::vector<double> add_keyframe_times;
+double optimize_time;
+std::vector<double> optimize_times;
+double lcd_time;
+std::vector<double> lcd_times;
+double lba_time;
+std::vector<double> lba_times;
+double rm_kf_time;
+std::vector<double> rm_kf_times;
+double bfs_time;
+std::vector<double> bfs_times;
+
+bool new_mapping_time = false;
+bool new_optimize_time = false;
+bool new_lc_time = false;
+
+void update_profiling_info() {
+  next_step_times.push_back(next_step_time);
+  tracking_times.push_back(tracking_time);
+  orb_left_times.push_back(orb_left_time);
+  orb_right_times.push_back(orb_right_time);
+  tracking_prev_times.push_back(tracking_prev_time);
+  tracking_local_times.push_back(tracking_local_time);
+  kf_decision_times.push_back(kf_decision_time);
+  if (new_mapping_time) {
+    mapping_times.push_back(mapping_time);
+    opt_main_times.push_back(opt_main_time);
+    stereo_match_times.push_back(stereo_match_time);
+    add_landmarks_times.push_back(add_landmarks_time);
+    add_keyframe_times.push_back(add_keyframe_time);
+    new_mapping_time = false;
+  }
+  if (new_optimize_time) {
+    optimize_times.push_back(optimize_time);
+    lcd_times.push_back(lcd_time);
+    lba_times.push_back(lba_time);
+    rm_kf_times.push_back(rm_kf_time);
+    new_optimize_time = false;
+  }
+  if (new_lc_time) {
+    bfs_times.push_back(bfs_time);
+    new_lc_time = false;
+  }
+}
+
+void summarize_single_profiling(std::vector<double> times) {
+  double mean = std::accumulate(times.begin(), times.end(), 0.0) / times.size();
+  std::vector<double> diff(times.size());
+  std::transform(times.begin(), times.end(), diff.begin(),
+                 [mean](double x) { return x - mean; });
+  double variance =
+      std::inner_product(diff.begin(), diff.end(), diff.begin(), 0.0) /
+      diff.size();
+  double stddev = std::sqrt(variance);
+  std::cout << "Number of recorded values: " << times.size() << std::endl;
+  std::cout << "Mean: " << mean << std::endl;
+  std::cout << "Max: " << *std::max_element(times.begin(), times.end())
+            << std::endl;
+  std::cout << "Min: " << *std::min_element(times.begin(), times.end())
+            << std::endl;
+  std::cout << "Variance: " << variance << std::endl;
+  std::cout << "Standard deviation: " << stddev << std::endl;
+}
+
+void summarize_profiling() {
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "*****PROFILING ANALYSIS******" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Single frame processing (main thread)" << std::endl;
+  int too_long_ctr = 0;
+  for (auto elem : next_step_times) {
+    std::cout << elem << std::endl;
+    if (elem > 50) too_long_ctr++;
+  }
+  std::cout << "Too long for " << 100 * too_long_ctr / next_step_times.size()
+            << "% of frames" << std::endl;
+  summarize_single_profiling(next_step_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "LC pose update propagation w/ BFS (main thread)" << std::endl;
+  summarize_single_profiling(bfs_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Orb right (separate thread)" << std::endl;
+  summarize_single_profiling(orb_right_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "Tracking (main thread)" << std::endl;
+  summarize_single_profiling(tracking_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Orb left" << std::endl;
+  summarize_single_profiling(orb_left_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Tracking (previous landmarks)" << std::endl;
+  summarize_single_profiling(tracking_prev_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Tracking (local map)" << std::endl;
+  summarize_single_profiling(tracking_local_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Keyframe decision" << std::endl;
+  summarize_single_profiling(kf_decision_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "Mapping (main thread)" << std::endl;
+  summarize_single_profiling(mapping_times);
+  std::cout << "Stereo matching" << std::endl;
+  summarize_single_profiling(stereo_match_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Adding landmarks and observations" << std::endl;
+  summarize_single_profiling(add_landmarks_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Adding keyframe" << std::endl;
+  summarize_single_profiling(add_keyframe_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Optimization main" << std::endl;
+  summarize_single_profiling(opt_main_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+  std::cout << "Optimization (separate thread)" << std::endl;
+  summarize_single_profiling(optimize_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Loop closure detection" << std::endl;
+  summarize_single_profiling(lcd_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Local bundle adjustment" << std::endl;
+  summarize_single_profiling(lba_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "Removing keyframes" << std::endl;
+  summarize_single_profiling(rm_kf_times);
+  std::cout << "++++++++++++++++++++++++++++++" << std::endl;
+  std::cout << "------------------------------" << std::endl;
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// Other
+///////////////////////////////////////////////////////////////////////////////
+bool show_gui = true;
 
 int current_frame = 0;
 Sophus::SE3d current_pose;
 Sophus::SE3d relative_pose;
-Sophus::SE3d prev_kf_pose;
 Sophus::SE3d prev_pose;
 RelativeTransforms relative_transforms;
 bool take_keyframe = true;
@@ -305,9 +474,6 @@ std::string evaluation_path = "evaluation/";
 // Parse parameters, load data, and create GUI window and event loop (or
 // process everything in non-gui mode).
 int main(int argc, char** argv) {
-  auto global_start = std::chrono::high_resolution_clock::now();
-  auto global_end = std::chrono::high_resolution_clock::now();
-  bool show_gui = true;
   std::string dataset_path = "data/V1_01_easy/mav0";
   std::string vo_path = "visual_odometry_poses.csv";
   std::string cam_calib = "opt_calib.json";
@@ -463,34 +629,38 @@ int main(int argc, char** argv) {
 
       if (continue_next) {
         // stop if there is nothing left to do
-        if (current_frame == 0) {
-          global_start = std::chrono::high_resolution_clock::now();
-        }
+        auto start = now();
         continue_next = next_step();
+        auto end = now();
+        next_step_time = to_mseconds(end - start);
+        update_profiling_info();
+        if (next_step_time / 1e3 < 1.0 / double(frame_rate)) {
+          int wait_for = int((1e3 / double(frame_rate)) - next_step_time);
+          std::cout << "Waiting for " << wait_for / 1e3 << " secs" << std::endl;
+          std::this_thread::sleep_for(std::chrono::milliseconds(wait_for));
+        }
       } else {
         // if the gui is just idling, make sure we don't burn too much CPU
-        global_end = std::chrono::high_resolution_clock::now();
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
     }
   } else {
     // non-gui mode: Process all frames, then exit
-    while (next_step()) {
-      // nop
+    continue_next = true;
+    while (continue_next) {
+      auto start = now();
+      continue_next = next_step();
+      auto end = now();
+      next_step_time = to_mseconds(end - start);
+      update_profiling_info();
+      if (next_step_time / 1e3 < 1.0 / double(frame_rate)) {
+        int wait_for = int((1e3 / double(frame_rate)) - next_step_time);
+        std::cout << "Waiting for " << wait_for / 1e3 << " secs" << std::endl;
+        std::this_thread::sleep_for(std::chrono::milliseconds(wait_for));
+      }
     }
   }
-
-  double time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           global_end - global_start)
-                           .count()) /
-                      1e9;
-  std::cout << "Entire run took: " << time_taken << std::setprecision(9)
-            << " sec" << std::endl;
-  std::cout << "Average time per frame: " << time_taken / (current_frame + 1)
-            << std::endl;
-  /*MAPPING*/
-  float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
-  std::cout << "Too slow for " << percentage << " of the time" << std::endl;
+  summarize_profiling();
   return 0;
 }
 
@@ -498,8 +668,6 @@ int main(int argc, char** argv) {
 void draw_image_overlay(pangolin::View& v, size_t view_id) {
   UNUSED(v);
 
-  const u_int8_t color_red[3]{255, 0, 0};    // red
-  const u_int8_t color_green[3]{0, 250, 0};  // green
   size_t frame_id = view_id == 0 ? show_frame1 : show_frame2;
   size_t cam_id = view_id == 0 ? show_cam1 : show_cam2;
 
@@ -677,11 +845,6 @@ void draw_image_overlay(pangolin::View& v, size_t view_id) {
       text_row += 20;
     }
   }
-  // std::string msg = too_slow ? "TOO SLOW (%.2f %% too slow)"
-  //                           : "Good speed (%.2f %% too slow)";
-  // glColor3ubv(too_slow ? color_red : color_green);
-  // float percentage = 100 * float(too_slow_count) / float(current_frame + 1);
-  // pangolin::GlFont::I().Text(msg.c_str(), percentage).Draw(5, 120);
 
   if (show_epipolar) {
     glLineWidth(1.0);
@@ -1307,6 +1470,7 @@ void update_os_options() {
 }
 void update_abs_poses() {
   // use bfs over essential graph
+  auto start_bfs = now();
   for (auto& kf_1 : cov_frames) {
     TimeCamId tcid_kf1(kf_1, 0);
     for (auto& kf_2 : cov_frames) {
@@ -1344,6 +1508,9 @@ void update_abs_poses() {
       queue.push_back(neighbor.first);
     }
   }
+  auto end_bfs = now();
+  bfs_time = to_mseconds(end_bfs - start_bfs);
+  new_lc_time = true;
 }
 void update_optimized_variables() {
   opt_thread->join();
@@ -1361,19 +1528,18 @@ void update_optimized_variables() {
 
 void detect_right_keypoints_separate_thread(const TimeCamId& tcidr,
                                             KeypointsData& kdr) {
-  // if (right_keypoint_detection_running) {
-  //  kp_thread->join();
-  //}
   kp_thread.reset(new std::thread([&] {
     right_keypoint_detection_running = true;
+    auto start_orb_right = now();
     pangolin::ManagedImage<uint8_t> imgr = pangolin::LoadImage(images[tcidr]);
     detectKeypointsAndDescriptors(imgr, kdr, num_features_per_image,
                                   rotate_features);
     feature_corners[tcidr] = kdr;
+    auto end_orb_right = now();
+    orb_right_time = to_mseconds(end_orb_right - start_orb_right);
   }));
 }
 bool next_step() {
-  auto start = std::chrono::high_resolution_clock::now();
   std::cout << "\n\nFRAME " << current_frame << std::endl;
   std::cout << "Num keyframes: " << kf_frames.size() << std::endl;
   std::cout << "Num landmarks: " << landmarks.size() << std::endl;
@@ -1386,103 +1552,97 @@ bool next_step() {
   if (!opt_running && opt_finished) {
     if (loop_closure_candidate != -1) {
       std::cout << "FOUND LOOP CLOSURE CANDIDATE" << std::endl;
-      return false;  // don't continue next
+      if (show_gui)
+        return false;  // don't continue next
+      else
+        clear_loop_closure();
+      return true;
     }
     update_optimized_variables();
   }
 
   // only stop once all threads have joined
   if (current_frame >= int(timestamps.size()) - 1) {
-    // full bundle adjustment
-    BundleAdjustmentOptions ba_options;
-    ba_options.optimize_intrinsics = ba_optimize_intrinsics;
-    ba_options.use_huber = true;
-    ba_options.huber_parameter = reprojection_error_huber_pixel;
-    ba_options.max_num_iterations = 80;
-    ba_options.verbosity_level = ba_verbose;
-    std::set<TimeCamId> fixed_cameras;
-    bundle_adjustment(feature_corners, ba_options, fixed_cameras, calib_cam,
-                      cameras, landmarks);
+    //  // full bundle adjustment
+    //  BundleAdjustmentOptions ba_options;
+    //  ba_options.optimize_intrinsics = ba_optimize_intrinsics;
+    //  ba_options.use_huber = true;
+    //  ba_options.huber_parameter = reprojection_error_huber_pixel;
+    //  ba_options.max_num_iterations = 80;
+    //  ba_options.verbosity_level = ba_verbose;
+    //  std::set<TimeCamId> fixed_cameras;
+    //  bundle_adjustment(feature_corners, ba_options, fixed_cameras, calib_cam,
+    //                    cameras, landmarks);
     return false;
   }
   /* TRACKING */
 
-  // Orb feature detection for left image
-  auto start_dkad = std::chrono::high_resolution_clock::now();
+  auto start_tracking = now();
   KeypointsData kdl;
   KeypointsData kdr;
-  pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
   detect_right_keypoints_separate_thread(tcidr, kdr);
+
+  // Orb feature detection for left image
+  auto start_orb_left = now();
+  pangolin::ManagedImage<uint8_t> imgl = pangolin::LoadImage(images[tcidl]);
   detectKeypointsAndDescriptors(imgl, kdl, num_features_per_image,
                                 rotate_features);
-  auto end_dkad = std::chrono::high_resolution_clock::now();
-
-  double time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           end_dkad - start_dkad)
-                           .count()) /
-                      1e9;
-  std::cout << "Detecting keypoints and descriptors took: " << time_taken
-            << std::setprecision(9) << " sec" << std::endl;
-  /*MAPPING*/
   feature_corners[tcidl] = kdl;
+  auto end_orb_left = now();
+  orb_left_time = to_mseconds(end_orb_left - start_orb_left);
 
   // ESTIMATE POSE BASED ON PREVIOUS FRAME
   Landmarks prev_landmarks;
   MatchData md_prev;
   std::vector<int> inliers;
+  auto start_tracking_prev = now();
   get_landmark_subset(landmarks, prev_lm_ids, prev_landmarks);
   Sophus::SE3d T_w_c = current_pose;
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
                          prev_landmarks, inliers, T_w_c, md_prev);
-
-  std::cout << "Found " << md_prev.matches.size()
-            << " matches with previous frame." << std::endl;
+  auto end_tracking_prev = now();
+  tracking_prev_time = to_mseconds(end_tracking_prev - start_tracking_prev);
 
   // PROJECT LOCAL MAP AND ESTIMATE POSE BASED ON LOCAL MAP
   Landmarks local_landmarks;
   MatchData md_local;
+  auto start_tracking_local = now();
   get_local_map(md_prev, landmarks, kf_frames, cov_graph, min_weight_k1,
                 local_landmarks);
 
   project_match_localize(calib_cam, feature_corners, os_opts, kdl,
                          local_landmarks, inliers, T_w_c, md_local);
+  auto end_tracking_local = now();
+  tracking_local_time = to_mseconds(end_tracking_local - start_tracking_local);
 
-  std::cout << "Found " << md_local.matches.size() << " matches with local map."
-            << std::endl;
-
-  if (calculate_absolute_pose_error(T_w_c, current_pose) <= max_pose_diff) {
-    current_pose = T_w_c;
-    // keep track of match local landmarks for this frame
-    prev_lm_ids.clear();
-    for (auto& match : md_local.matches) {
-      prev_lm_ids.emplace(match.second);
-    }
-    bool mapping_busy = opt_running || opt_finished;
-    old_make_keyframe_decision(take_keyframe, mapping_busy, new_kf_min_inliers,
-                               md_local);
-  } else {
-    std::cout << "Pose difference is too large..." << std::endl;
-    take_keyframe = false;
+  current_pose = T_w_c;
+  // keep track of match local landmarks for this frame
+  prev_lm_ids.clear();
+  for (auto& match : md_local.matches) {
+    prev_lm_ids.emplace(match.second);
   }
+  auto start_kf_decision = now();
+  bool mapping_busy = opt_running || opt_finished;
+  old_make_keyframe_decision(take_keyframe, mapping_busy, new_kf_min_inliers,
+                             md_local);
 
   // make_keyframe_decision(take_keyframe, landmarks, max_frames_since_last_kf,
   //                       frames_since_last_kf, new_kf_min_inliers, min_kfs,
   //                       min_weight_k1, max_kref_overlap, mapping_busy,
   //                       md_local, kf_frames);
+  auto end_kf_decision = now();
+  kf_decision_time = to_mseconds(end_kf_decision - start_kf_decision);
+  auto end_tracking = now();
+  tracking_time = to_mseconds(end_tracking - start_tracking);
 
-  auto end_tracking = std::chrono::high_resolution_clock::now();
-  time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    end_tracking - start)
-                    .count()) /
-               1e9;
-  std::cout << "Tracking took: " << time_taken << std::setprecision(9) << " sec"
-            << std::endl;
   /*MAPPING*/
   if (take_keyframe) {
+    auto start_mapping = now();
     frames_since_last_kf = 0;
     std::cout << "Adding as keyframe..." << std::endl;
 
     // Stereo feature matching
+    auto start_stereo_match = now();
     Eigen::Matrix3d E;
     MatchData md_stereo;
     md_stereo.T_i_j = T_0_1;
@@ -1502,30 +1662,34 @@ bool next_step() {
               << std::endl;
 
     feature_matches[std::make_pair(tcidl, tcidr)] = md_stereo;
+    auto end_stereo_match = now();
+    stereo_match_time = to_mseconds(end_stereo_match - start_stereo_match);
 
-    // Add new keyframe
-    cameras[tcidl].T_w_c = current_pose;
-    cameras[tcidr].T_w_c = current_pose * T_0_1;
-
-    prev_kf_pose = current_pose;
-
+    auto start_add_lm = now();
     add_new_landmarks(tcidl, tcidr, kdl, kdr, current_pose, calib_cam, inliers,
                       md_stereo, md_local, d_min, d_max, landmarks, prev_lm_ids,
                       next_landmark_id);
+    auto end_add_lm = now();
+    add_landmarks_time = to_mseconds(end_add_lm - start_add_lm);
 
+    // Add new keyframe
+    auto start_add_kf = now();
+    cameras[tcidl].T_w_c = current_pose;
+    cameras[tcidr].T_w_c = current_pose * T_0_1;
     kf_ts.emplace(timestamps.at(current_frame), tcidl.first);
     add_new_keyframe(tcidl.first, prev_lm_ids, cameras, min_weight,
                      relative_transforms, kf_frames, cov_graph);
 
+    auto end_add_kf = now();
+    add_keyframe_time = to_mseconds(end_add_kf - start_add_kf);
     // Loop Closure + Local Bundle Adjustment + Remove Keyframes
+    auto start_opt_main = now();
     optimize(tcidl);
-    auto end = std::chrono::high_resolution_clock::now();
-    time_taken = (std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      end - end_tracking)
-                      .count()) /
-                 1e9;
-    std::cout << "Mapping part took: " << time_taken << std::setprecision(9)
-              << " sec" << std::endl;
+    auto end_opt_main = now();
+    opt_main_time = to_mseconds(end_opt_main - start_opt_main);
+    auto end_mapping = now();
+    new_mapping_time = true;
+    mapping_time = to_mseconds(end_mapping - start_mapping);
   } else {
     frames_since_last_kf++;
   }
@@ -1533,20 +1697,6 @@ bool next_step() {
   // update image views
   change_display_to_image(tcidl);
   change_display_to_image(tcidr);
-  // track metrics
-  // trans_error = calculate_translation_error(
-  //    current_pose, std::get<0>(groundtruths.at(current_frame)));
-  // running_trans_error += trans_error;
-  // ape = calculate_absolute_pose_error(
-  //    current_pose, std::get<0>(groundtruths.at(current_frame)));
-  // if (current_frame > 1) {
-  //  rpe = calculate_relative_pose_error(
-  //      std::get<0>(groundtruths.at(current_frame)),
-  //      std::get<0>(groundtruths.at(current_frame - 1)), current_pose,
-  //      prev_pose);
-  //} else {
-  //  rpe = 0;
-  //}
   estimated_poses.emplace_back(current_pose);
   estimated_path.emplace_back(current_pose.translation());
   current_frame++;
@@ -1554,21 +1704,7 @@ bool next_step() {
   if (kp_thread->joinable()) {
     kp_thread->join();
   }
-  auto end = std::chrono::high_resolution_clock::now();
-  time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  too_slow = (time_taken > 1.0 / double(frame_rate));
-  if (too_slow)
-    too_slow_count++;
-  else {
-    int wait_for = int((1e9 / double(frame_rate)) - 1e9 * time_taken);
-    std::cout << "Waiting for " << wait_for / 1e9 << " secs" << std::endl;
-    std::this_thread::sleep_for(std::chrono::nanoseconds(wait_for));
-  }
-  std::cout << "Next step took: " << time_taken << std::setprecision(9)
-            << " sec" << std::endl;
+
   return true;
 }
 void save_scene() { save_scene_flag = true; }
@@ -1577,7 +1713,6 @@ void record_video() { record_video_flag = !record_video_flag; }
 // Compute reprojections for all landmark observations for visualization and
 // outlier removal.
 void compute_projections(ImageProjections& image_projections) {
-  auto start = std::chrono::high_resolution_clock::now();
   image_projections.clear();
 
   for (const auto& kv_lm : landmarks) {
@@ -1623,54 +1758,12 @@ void compute_projections(ImageProjections& image_projections) {
       image_projections[tcid].outlier_obs.emplace_back(proj_lm);
     }
   }
-
-  auto end = std::chrono::high_resolution_clock::now();
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  std::cout << "Compute projections took: " << time_taken
-            << std::setprecision(9) << " sec" << std::endl;
 }
-
-// void detect_loop_closure() {
-//  std::cout << "Detecting loop closure..." << std::endl;
-//  loop_closure_running = true;
-//  // landmarks_lc = landmarks;
-//  // cov_graph_lc = cov_graph;
-//  lc_thread.reset(new std::thread([&] {
-//    TimeCamId tcidl(loop_closure_frame, 0);
-//    Sophus::SE3d pose = cameras.at(tcidl).T_w_c;
-//    Connections neighbors = cov_graph.at(loop_closure_frame);
-//    double max_diff = get_max_pose_difference(
-//        pose, cameras, neighbors);  // from keyframes connected in covgraph
-//    loop_closure_candidates = get_loop_closure_candidates(
-//        loop_closure_frame, pose, cameras, neighbors, kf_frames, max_diff);
-//    LandmarkMatchData lmmd;
-//    loop_closure_candidate =
-//        perform_matching(kf_frames, loop_closure_candidates, tcidl,
-//                         feature_corners, landmarks, os_opts, lmmd);
-//    if (loop_closure_candidate != -1) {
-//      merge_landmarks(loop_closure_frame, lmmd, min_weight, cov_graph,
-//                      kf_frames, landmarks, prev_lm_ids, old_landmarks);
-//    }
-//    std::cout << "Final candidate: " << loop_closure_candidate << std::endl;
-//    loop_closure_running = false;
-//    loop_closure_finished = true;
-//    std::cout << "Loop closure detection finished." << std::endl;
-//  }));
-//}
 
 // Optimize local map
 void optimize(TimeCamId tcidl) {
-  auto start = std::chrono::high_resolution_clock::now();
-
   std::cout << "Optimizing map with " << 2 * cov_frames.size() << " cameras, "
             << local_lms.size() << " points." << std::endl;
-
-  // Fix oldest two cameras to fix SE3 and scale gauge. Making the whole second
-  // camera constant is a bit suboptimal, since we only need 1 DoF, but it's
-  // simple and the initial poses should be good from calibration.
 
   // Prepare bundle adjustment
   BundleAdjustmentOptions ba_options;
@@ -1692,8 +1785,10 @@ void optimize(TimeCamId tcidl) {
 
   loop_closure_frame = tcidl.first;
   opt_thread.reset(new std::thread([ba_options] {
+    auto start_optimize = now();
     TimeCamId tcidl(loop_closure_frame, 0);
     Sophus::SE3d pose = cameras_opt.at(tcidl).T_w_c;
+    auto start_lcd = now();
     Connections neighbors = cov_graph_opt.at(loop_closure_frame);
     double max_diff = get_max_pose_difference(
         pose, cameras_opt, neighbors);  // from keyframes connected in covgraph
@@ -1720,28 +1815,30 @@ void optimize(TimeCamId tcidl) {
     }
     get_cov_map(loop_closure_frame, kf_frames_opt, cov_graph_opt, local_lms,
                 cov_frames);
+    auto end_lcd = now();
+    lcd_time = to_mseconds(end_lcd - start_lcd);
     std::set<TimeCamId> cov_cameras;
+    auto start_lba = now();
     for (auto& kf : cov_frames) {
       cov_cameras.emplace(kf, 0);
       cov_cameras.emplace(kf, 1);
     }
     local_bundle_adjustment(feature_corners, ba_options, cov_cameras, local_lms,
                             calib_cam_opt, cameras_opt, landmarks_opt);
+    auto end_lba = now();
+    lba_time = to_mseconds(end_lba - start_lba);
 
+    auto start_rm_kf = now();
     remove_redundant_keyframes(cameras_opt, landmarks_opt, kf_frames_opt,
                                cov_graph_opt, cov_frames, min_kfs,
                                max_redundant_obs_count);
-    compute_projections(image_projections_opt);
+    auto end_rm_kf = now();
+    rm_kf_time = to_mseconds(end_rm_kf - start_rm_kf);
+    if (show_gui) compute_projections(image_projections_opt);
     opt_finished = true;
     opt_running = false;
+    auto end_optimize = now();
+    optimize_time = to_mseconds(end_optimize - start_optimize);
+    new_optimize_time = true;
   }));
-
-  // Update project info cache
-  auto end = std::chrono::high_resolution_clock::now();
-  double time_taken =
-      (std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
-           .count()) /
-      1e9;
-  std::cout << "Optimize took: " << time_taken << std::setprecision(9) << " sec"
-            << std::endl;
 }
