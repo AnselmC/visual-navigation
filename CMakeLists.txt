@@ -8,7 +8,7 @@ set(EIGEN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/eigen")
 set(CERES_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-ceres-solver")
 set(PANGOLIN_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-Pangolin/src")
 set(OPENGV_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-opengv")
-set(YAMLCPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/build-yaml-cpp/")
+set(YAML_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/yaml-cpp/")
 
 # Set default build type if not specified otherwise.
 # See https://cmake.org/pipermail/cmake/2012-May/050243.html
@@ -59,8 +59,10 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -DNDEBUG")                                     
 SET(CMAKE_CXX_FLAGS " -ftemplate-backtrace-limit=0 -Wall -Wextra ${EXTRA_WARNING_FLAGS} -march=${CXX_MARCH} ${CMAKE_CXX_FLAGS}")
 
 
-find_package(yaml-cpp 0.6.0 REQUIRED)
-message(STATUS "Found yaml-cpp")
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "disable yaml tests")
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "disable yaml tools")
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "disable yaml contrib")
+add_subdirectory(${YAML_ROOT})
 
 set(EIGEN_INCLUDE_DIR_HINTS ${EIGEN_ROOT})
 find_package(Eigen3 3.3.7 EXACT REQUIRED MODULE)
@@ -72,6 +74,7 @@ message(STATUS "Found Eigen headers in: ${EIGEN3_INCLUDE_DIR}")
 include_directories(thirdparty/Sophus)
 include_directories(thirdparty/cereal/include)
 include_directories(thirdparty/CLI11/include)
+include_directories(thirdparty/yaml-cpp/include)
 include_directories(include)
 
 find_package(Ceres 1.14 REQUIRED CONFIG HINTS "${CERES_ROOT}" NO_DEFAULT_PATH)
