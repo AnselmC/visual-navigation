@@ -187,7 +187,7 @@ using Cameras =
 
 /// collection {trackId => Landmark} for all landmarks in the map.
 /// trackIds correspond to feature_tracks
-using Landmarks = tbb::concurrent_unordered_map<TrackId, Landmark>;
+using Landmarks = std::unordered_map<TrackId, Landmark>;
 
 /// camera candidate to be added to map
 struct CameraCandidate {

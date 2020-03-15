@@ -354,7 +354,7 @@ void remove_kf(FrameId current_kf, Cameras& cameras, Landmarks& landmarks) {
     }
     // remove landmarks with no more observations
     if (it->second.obs.size() == 0) {
-      it = landmarks.unsafe_erase(it);
+      it = landmarks.erase(it);
     } else {
       ++it;
     }
@@ -711,7 +711,7 @@ void merge_landmarks(const FrameId& kf, const LandmarkMatchData& lmmd,
           obs.erase(obs_right);
         }
         if (obs.size() == 0) {  // remove landmark
-          landmarks.unsafe_erase(lm_pair.first);
+          landmarks.erase(lm_pair.first);
         }
       }
     }
