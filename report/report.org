@@ -24,13 +24,13 @@
 Simultaneous Localization and Mapping (SLAM) is used by robots to map their environment in real-time and localize themselves in it simultaneously.
 Originally, SLAM was developed using LiDARs \cite{slam}, however, the advent of small, mobile robots (i.e. drones) has required computational systems that rely on less expensive and heavy sensory equipment. 
 This need was met with Visual SLAM - a SLAM system based on a monocular or stereo RGB camera setup.
-One of the groundbreaking Visual SLAM systems is ORB-SLAM (OS) which was originally proposed in 2015 \cite{os} and further developed in \cite{os-II}.
-The main contributions of OS are feature-reusing throughout the entire pipeline, local optimization, real-time capable tracking, mapping, loop closing, robust initialization and localization, and techniques for compact map representation to allow for long-term operation. 
+One of the groundbreaking Visual SLAM systems is ORB-SLAM (OS) which was originally proposed in 2015 by Mur-Artal et al. \cite{os} and further developed in \cite{os-II} by the same authors.
+The main contributions of cOS are feature-reusing throughout the entire pipeline, local optimization, real-time capable tracking, mapping, loop closing, robust initialization and localization, and techniques for compact map representation to allow for long-term operation. 
 The illumination, scale, rotation and translation invariant ORB features\cite{orb} are used for tracking, mapping, relocalization and loop closing - the main SLAM steps. 
 Local pose tracking and map optimization are done through a novel, so-called Covisibility Graph. A subset of this graph, the Essential Graph, is exploited for real-time capable loop-closing. 
 For monocular systems - with which the original OS paper concerned itself - the authors propose a heuristic algorithm for scene initialization that produces a unique, robust result. 
 Furthermore, for scene recognition they propose a Bag of Words (BoW) \cite{bow} approach.
-In our project we extended the stereo Visual Odometry (VO) system developed throughout the semester to an OS-like setup. 
+In our project, we extended the stereo Visual Odometry (VO) system developed throughout the semester to an OS-like setup. 
 Concretely, we implemented the Covisibility Graph used in tracking and mapping and the Essential Graph used in loop closing. 
 Additionally, instead of the BoW approach of OS, we designed a place recognition system based on pose similarity and 3D-point correspondences. 
 Finally, we adhered to the original authors’ suggestions for removing redundant keyframes whilst adding new keyframes more frequently than in the VO system. 
@@ -39,7 +39,7 @@ Overall, our system was compared with its parent - the VO implementation - on th
 The implementation can be found on Gitlab.\footnote{https://gitlab.vision.in.tum.de/visnav\_ws19/w0031/visnav.git, branch: develop}
 
 * System Overview
-As noted, the presented system was built based on and inspired by \cite{os} and \cite{os-II},
+As noted, the presented system was built based on and inspired by Mur-Artal et al.'s \cite{os} and \cite{os-II},
 the main differences being that the original papers consider loop closures as disjunct from map building (operating in a separate thread), and that they use a more complex method for detecting loop closures - namely BoW versus pose similarity. 
 The map representation is made up of 3D points in space, termed landmarks, keyframes (camera poses and associated landmark observations), and a Covisibility Graph connecting camera poses with each other based on 
 similarity of viewpoints, see Figure [[fig:map-overview]].
@@ -68,7 +68,7 @@ so that if mapping is concluded, the detected features are available without fur
 
 ** Covisibility Graph
 
-The Covisibility Graph is one of the central contributions by the original Orb-SLAM authors. In contrast to visual odometry where tracking (and mapping) is done based on temporal proximity, the Covisibility Graph 
+The Covisibility Graph is one of the central contributions by the original Orb-SLAM authors Mur-Artal et al.. In contrast to visual odometry where tracking (and mapping) is done based on temporal proximity, the Covisibility Graph 
 considers spatial closeness.
 So instead of doing tracking and mapping by exploiting information only from the n previous keyframes and their associated landmarks, keyframes with similar scenes and poses are selected.
 This is achieved by constructing a weighted, undirected graph where keyframes are nodes and an edge $e_{ij}$ between two keyframes $k_i$ and $k_j$ exists if they have a similar view, 
@@ -130,14 +130,10 @@ New landmarks are added based on stereo matches that have not yet been associate
 In order to disregard outliers as quickly as possible, the distance to the left camera needs to be between $d_{min}=0.1m$ and $d_{max}=10m$.
 Once this is completed, further mapping steps, namely redundant keyframe removal, loop closure and local bundle adjustment, are computed in a separate thread.
 
-** Keyframe Removal
-Keyframes with redundant information produce two undesirable effects. First, they unnecessarily inflate the system’s memory footprint. Second, the redundant keyframes' pose estimates are 
-likely to have an adverse outcome on pose and map estimation.
-Thus, keyframes are removed if more than $k_{max}^{overlap}=90\%$ of the landmarks they observe, are also seen by at least three other keyframes. For better understanding, pseudo-code for this procedure 
-is given in Algorithm [[algo:kf-removal]].
 
 #+CAPTION: The algorithm used for keyframe removal.
 #+NAME:algo:kf-removal
+#+ATTR_LATEX: :options [th]
 #+BEGIN_listing
 \begin{minted}[escapeinside=||,mathescape=true]{text}
 FOR keyframe in keyframes
@@ -154,6 +150,12 @@ FOR keyframe in keyframes
 END FOR
 \end{minted}
 #+END_listing
+
+** Keyframe Removal
+Keyframes with redundant information produce two undesirable effects. First, they unnecessarily inflate the system’s memory footprint. Second, the redundant keyframes' pose estimates are 
+likely to have an adverse outcome on pose and map estimation.
+Thus, keyframes are removed if more than $k_{max}^{overlap}=90\%$ of the landmarks they observe, are also seen by at least three other keyframes. For better understanding, pseudo-code for this procedure 
+is given in Algorithm [[algo:kf-removal]].
 
 ** Loop Closure
 Every estimation step will introduce an error - however slight it may be. As time progresses, the error will accumulate and cause a problem known as drift, as exemplified in Figure [[fig:drift]].
@@ -182,6 +184,7 @@ However, the pose update is done separately from loop closure detection after th
 
 #+CAPTION: Breadth-First Search applied to pose update propagation via the Essential Graph.
 #+NAME: algo:bfs
+#+ATTR_LATEX: :options [th]
 #+BEGIN_listing
 \begin{minted}[escapeinside=||,mathescape=true]{text}
 CREATE queue
@@ -324,12 +327,12 @@ This is likely due to the map being a closed room where even a VO system accumul
 [[./resources/traj-vo.png]]
 
 * Conclusion
-During the final stretch of the semester we were able to extend the hitherto developed Visual Odometry system to include a large part of the contributions of ORB-SLAM: the Covisibility Graph for local tracking
+We were able to extend the hitherto developed Visual Odometry system to include a large part of the contributions of ORB-SLAM: the Covisibility Graph for local tracking
 and mapping, Loop Closure for drift compensation via the Essential Graph and BFS pose update propagation, and finally Keyframe Removal for compact map representation. Through performance optimization (most notably
 by running feature detection for left and right frames concurrently) we were able to withstand the added functionality and keep the system running at 20 Hz for 99% of the time. 
 Evaluating the previous VO system to ours showed improved map consistency and similar numerical results for trajectory accuracy, 
 likely due to the map at hand. Comparing the systems on different datasets from the EUROC datasets was not possible as both systems weren't robust enough
-to manage the more difficult tracks (although notably VO failed far sooner than our OS system). There are two performance improvements that the timeframe did not permit to implement but would likely result in a comparable
+to manage the more difficult tracks (although notably VO failed far sooner than our OS system). In future work, there are two performance improvements that would likely result in a comparable
 system to the original ORB-SLAM: first, using a BoW representation of the ORB-feature space for place recognition in Loop Closure, and secondly, to run Loop Closure truly in a third thread (instead of having it be part
 of mapping).
 
