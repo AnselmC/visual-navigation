@@ -1,3 +1,7 @@
+_The course consisted of a series of programming exercises implementing visual odometry and a final project_.
+_For the final project, we implemented an ORB-SLAM inspired visual SLAM system_.
+_The report can be found under `report`_
+
 ## Vision-based Navigation
 
 This code is a part of the practical course "Vision-based Navigation" (IN2106) taught at the Technical University of Munich.
